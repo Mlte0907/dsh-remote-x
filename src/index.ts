@@ -1,0 +1,568 @@
+/**
+ * dsh-remote-x — DSH 网页端移动适配层 + 远程接入信息面板。
+ *
+ * 两件事：
+ * 1. 经 `webserver/index-inject` 向网页端注入移动端覆盖 CSS：窄屏（默认 <768px）
+ *    时把三栏 grid 单列化，其余全部复用网页端自身。宽屏零影响。
+ * 2. 恢复设置页「远程控制」标签（client 半，见 src/client/index.ts）背后的
+ *    数据 API：拼好手机访问地址（局域网 + proxy 端口 + 登录口令）并生成二维码。
+ *    API 挂在 DSH 原生认证墙内（同源已登录方可访问），口令不进 window 全局。
+ *
+ * 布局锚点基于探针实测（2026-09-03）：dsh-web-app 的 CSS Modules hash 只在前缀，
+ * 后缀语义化且全页唯一（_frame / _sidebarCol / _centerCol / _detailsCol），
+ * 因此用 [class*="_xxx"] 后缀匹配，不依赖会变的 hash。
+ */
+
+import { open, readFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { homedir, networkInterfaces } from 'node:os'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import { startTunnel } from '../lib/tunnel.mjs'
+
+/** Stable Cordis plugin name. */
+export const name = 'dsh-remote-x'
+
+/** Services required before apply runs. */
+export const inject = ['webServer', 'sessions', 'agents']
+
+/** Plugin config. */
+export interface Config {
+  /** Max viewport width (px) the mobile layer applies to. Default 768. */
+  breakpoint?: number
+  /** LAN proxy port phones connect through. Default 3081; 0 = not deployed. */
+  proxyPort?: number
+  /** Section label. Default '远程控制'. */
+  title?: string
+  /** Manual override for the login token (auto-detected by default). */
+  token?: string
+  /** Proxy access-key for QR entry URL. When set, QR links use ?key= instead of ?token=. */
+  accessKey?: string
+}
+
+export const Config: z<Config> = z.object({
+  breakpoint: z.number().default(768),
+  proxyPort: z.number().default(3081),
+  title: z.string().default('远程控制'),
+  token: z.string(),
+  accessKey: z.string(),
+  cloudflareToken: z.string(),
+  publicDomain: z.string(),
+})
+
+/* ------------------------------------------------------------------ */
+/* token detection: config → runtime probe → boot log scan            */
+/* ------------------------------------------------------------------ */
+
+const TOKEN_RE = /token=([A-Za-z0-9_-]+)/g
+
+/** Soft-probe the webServer service object for a token-shaped string field. */
+function probeRuntimeToken(ctx: Context): string | undefined {
+  try {
+    const ws = ctx.webServer as Record<string, unknown> | undefined
+    for (const [key, value] of Object.entries(ws ?? {})) {
+      if (/token/i.test(key) && typeof value === 'string' && value.length >= 16) return value
+    }
+  } catch {
+    // 软探测：字段不存在直接跳过
+  }
+  return undefined
+}
+
+/** Scan the tail of the backend boot log (desktop deployment standard). */
+async function scanTokenFromLog(): Promise<string | undefined> {
+  try {
+    const logPath = path.join(homedir(), '.dsh', 'desktop', 'backend.log')
+    const handle = await open(logPath, 'r')
+    try {
+      const { size } = await handle.stat()
+      const start = Math.max(0, size - 65_536)
+      const buf = Buffer.alloc(size - start)
+      await handle.read(buf, 0, buf.length, start)
+      const matches = [...buf.toString('utf8').matchAll(TOKEN_RE)]
+      return matches.at(-1)?.[1]
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return undefined
+  }
+}
+
+async function resolveToken(ctx: Context, config: Config): Promise<string | undefined> {
+  if (config.token !== undefined && config.token.length > 0) return config.token
+  const probed = probeRuntimeToken(ctx)
+  if (probed !== undefined) {
+    ctx.logger.info('dsh-remote-x: token resolved from webServer runtime probe')
+    return probed
+  }
+  const scanned = await scanTokenFromLog()
+  if (scanned !== undefined) {
+    ctx.logger.info('dsh-remote-x: token resolved from boot log scan')
+    return scanned
+  }
+  ctx.logger.warn('dsh-remote-x: login token not detected — set config.token to enable the QR panel')
+  return undefined
+}
+
+/**
+ * 惰性 token 解析（按进程缓存一次）。不能在 apply 时解析：
+ * 启动日志里的 `dsh web: ?token=` 行在 webserver 就绪后才打印，
+ * apply 早于它，且旧的 token 行会随重启滑出扫描窗口。
+ */
+let tokenCache: string | undefined | null = null
+
+function resolveTokenLazy(ctx: Context, config: Config): Promise<string | undefined> {
+  if (tokenCache !== null) return Promise.resolve(tokenCache)
+  return resolveToken(ctx, config).then((token) => {
+    tokenCache = token
+    return token
+  })
+}
+
+/* ------------------------------------------------------------------ */
+/* task list (mobile drawer) — 工作区分组任务列表，同网页端标题来源      */
+/* ------------------------------------------------------------------ */
+
+interface SessionEventLike {
+  readonly type: string
+  readonly time: number
+  readonly data: any
+}
+
+interface SessionHeaderLike {
+  readonly id: SessionId
+  readonly createdAt: number
+  readonly cwd?: string
+  readonly origin?: 'subagent'
+  readonly delegationDepth?: number
+}
+
+interface SessionLike {
+  readonly id: SessionId
+  readonly header: SessionHeaderLike
+  snapshotEvents(): readonly SessionEventLike[]
+}
+
+function textOfBlocks(blocks: readonly any[] | undefined): string {
+  if (!Array.isArray(blocks)) return ''
+  return blocks.filter(b => b?.type === 'text').map(b => b.text ?? '').join('')
+}
+
+function firstUserText(events: readonly SessionEventLike[]): string | undefined {
+  for (const event of events) {
+    if (event.type !== 'user/message') continue
+    const data = event.data ?? {}
+    if (data.source?.kind !== 'user') continue
+    const text = textOfBlocks(data.content).trim()
+    if (text.length > 0) return text.length > 40 ? `${text.slice(0, 39)}…` : text
+  }
+  return undefined
+}
+
+function isTopLevel(header: SessionHeaderLike): boolean {
+  return header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0
+}
+
+/** 在线会话标题：走网页端同一个 sessionTitle 服务。 */
+function liveTitle(ctx: Context, session: unknown): string | undefined {
+  try {
+    const titles = ctx.get('sessionTitle') as { get?: (s: unknown) => { title?: unknown } | undefined } | undefined
+    const title = titles?.get?.(session)?.title
+    return typeof title === 'string' && title.length > 0 ? title : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** 冷会话标题：批量折叠（readTitleSnapshots），失败逐条回退。 */
+async function coldTitles(query: any, ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  if (ids.length === 0) return out
+  try {
+    const results = (await query.readTitleSnapshots?.(ids)) ?? []
+    for (const item of results) {
+      if (item?.status !== 'fulfilled') continue
+      const title = item.value?.title?.title
+      const id = String(item.sessionId ?? item.value?.session?.id ?? '')
+      if (typeof title === 'string' && title.length > 0 && id.length > 0) out.set(id, title)
+    }
+  } catch {
+    for (const id of ids) {
+      try {
+        const title = await query.readTitle?.(id)?.then?.((s: any) => s?.title)
+        if (typeof title === 'string' && title.length > 0) out.set(id, title)
+      } catch { /* skip */ }
+    }
+  }
+  return out
+}
+
+async function buildTaskList(ctx: Context): Promise<{ groups: any[]; taskCount: number }> {
+  const query = ctx.get('sessionQuery')
+  // 诊断：dump 会话 header 字段与 listSessions 结构（用于对齐网页端侧栏过滤）
+  try {
+    const live0 = (ctx.sessions.list() as readonly SessionLike[])[0]
+    if (live0 !== undefined) {
+      ctx.logger.info(`remote-x-diag live header keys=${JSON.stringify(Object.keys(live0.header))} payload=${JSON.stringify(live0.header)}`)
+    }
+    if (query !== undefined) {
+      const recs = await query.listSessions()
+      ctx.logger.info(`remote-x-diag listSessions count=${recs.length} firstKeys=${JSON.stringify(Object.keys(recs[0] ?? {}))} first=${JSON.stringify(recs[0]?.header ?? recs[0])}`)
+    }
+  } catch (error) {
+    ctx.logger.info(`remote-x-diag failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const sessions = new Map<string, { header: SessionHeaderLike; live: boolean; events?: readonly SessionEventLike[] }>()
+
+  for (const session of ctx.sessions.list() as readonly SessionLike[]) {
+    if (!isTopLevel(session.header)) continue
+    sessions.set(session.id, { header: session.header, live: true, events: session.snapshotEvents() })
+  }
+  if (query !== undefined) {
+    try {
+      for (const record of await query.listSessions()) {
+        const header = record.header as SessionHeaderLike
+        if (!isTopLevel(header) || sessions.has(header.id)) continue
+        sessions.set(header.id, { header, live: record.live === true })
+      }
+    } catch { /* 持久化列表不可用时退化为在线会话 */ }
+  }
+
+  const coldIds = [...sessions.entries()]
+    .filter(([, entry]) => !entry.live)
+    .sort((a, b) => b[1].header.createdAt - a[1].header.createdAt)
+    .slice(0, 50)
+    .map(([id]) => id)
+  const folded = query === undefined ? new Map<string, string>() : await coldTitles(query, coldIds)
+
+  const tasks: any[] = []
+  for (const [id, entry] of sessions) {
+    const agent = ctx.agents.get(entry.header.id)
+    const running = agent?.status === 'running'
+    let title: string | undefined
+    if (entry.live) title = liveTitle(ctx, ctx.sessions.get(entry.header.id))
+    if (title === undefined) title = folded.get(id)
+    if (title === undefined) continue
+    const lastActivityAt = entry.events !== undefined
+      ? (entry.events.at(-1)?.time ?? entry.header.createdAt)
+      : entry.header.createdAt
+    tasks.push({ id, title, cwd: entry.header.cwd, updatedAt: lastActivityAt, running, live: entry.live })
+  }
+  tasks.sort((a: any, b: any) => b.updatedAt - a.updatedAt)
+
+  const byCwd = new Map<string, any[]>()
+  for (const task of tasks) {
+    const key = task.cwd ?? '(default)'
+    if (!byCwd.has(key)) byCwd.set(key, [])
+    byCwd.get(key)!.push(task)
+  }
+  const groups = [...byCwd.entries()].map(([cwd, list]) => ({
+    cwd,
+    label: cwd === '(default)' ? cwd : (cwd.split('/').pop() || cwd),
+    tasks: list,
+  })).sort((a: any, b: any) => {
+    const maxA = Math.max(...a.tasks.map((t: any) => t.updatedAt))
+    const maxB = Math.max(...b.tasks.map((t: any) => t.updatedAt))
+    return maxB - maxA
+  })
+  return { groups, taskCount: tasks.length }
+}
+
+/* ------------------------------------------------------------------ */
+/* nonce gate for the QR panel API                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * DSH 的认证墙保护 root/index 响应（未认证 401），但插件自定义 prefix 路由
+ * 不在墙内，且本机 loopback 请求一律免认证——直接开放 qr-info 会让局域网内
+ * 任何人经 proxy 免口令拿到登录口令。
+ *
+ * 防线：index HTML 只在通过认证后才渲染，因此随 HTML 注入一次性 nonce；
+ * qr-info 要求请求头携带有效（未过期）nonce。攻击者未通过认证就看不到
+ * nonce；已认证者本来就已持有口令，无增量泄露。
+ */
+const NONCE_TTL_MS = 10 * 60_000
+const nonces = new Map<string, number>()
+
+function issueNonce(): string {
+  const nonce = randomBytes(16).toString('hex')
+  nonces.set(nonce, Date.now())
+  for (const [key, issuedAt] of nonces) {
+    if (Date.now() - issuedAt > NONCE_TTL_MS) nonces.delete(key)
+  }
+  return nonce
+}
+
+function nonceValid(nonce: unknown): boolean {
+  if (typeof nonce !== 'string' || nonce.length === 0) return false
+  const issuedAt = nonces.get(nonce)
+  if (issuedAt === undefined) return false
+  if (Date.now() - issuedAt > NONCE_TTL_MS) {
+    nonces.delete(nonce)
+    return false
+  }
+  return true
+}
+
+/* ------------------------------------------------------------------ */
+/* helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function sendJson(res: ServerResponse, status: number, value: unknown): void {
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  })
+  res.end(JSON.stringify(value))
+}
+
+function sendError(res: ServerResponse, status: number, message: string): void {
+  sendJson(res, status, { error: message })
+}
+
+function readJson(req: IncomingMessage, maxBytes = 4_000_000): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let total = 0
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length
+      if (total > maxBytes) {
+        reject(new Error('request body too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8').trim()
+      if (raw.length === 0) { resolve({}); return }
+      try { resolve(JSON.parse(raw)) } catch (error) { reject(error) }
+    })
+    req.on('error', reject)
+  })
+}
+
+/** Non-internal IPv4 addresses, deduped. */
+function lanAddresses(): string[] {
+  const out: string[] = []
+  for (const list of Object.values(networkInterfaces())) {
+    for (const net of list ?? []) {
+      if ((net.family === 'IPv4' || net.family === 4) && net.internal !== true) out.push(net.address)
+    }
+  }
+  return [...new Set(out)]
+}
+
+/** Self-rendered QR SVG — only uses qrcode's core matrix module (no pngjs). */
+async function renderQrSvg(text: string): Promise<string> {
+  const core: any = await import('qrcode/lib/core/qrcode.js')
+  const create = core?.create ?? core?.default?.create
+  const qr = create(text, { errorCorrectionLevel: 'M' })
+  const size: number = qr.modules.size
+  const data: Uint8Array = qr.modules.data
+  const quiet = 2
+  const total = size + quiet * 2
+  const parts: string[] = []
+  for (let row = 0; row < size; row += 1) {
+    for (let col = 0; col < size; col += 1) {
+      if (data[row * size + col] === 1) parts.push(`M${col + quiet} ${row + quiet}h1v1h-1z`)
+    }
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges">`
+    + `<rect width="${total}" height="${total}" fill="#ffffff"/>`
+    + `<path d="${parts.join('')}" fill="#000000"/></svg>`
+}
+
+/* ------------------------------------------------------------------ */
+/* plugin                                                             */
+/* ------------------------------------------------------------------ */
+
+/* 公网隧道状态（运行时、进程内；不跨重启持久化） */
+let publicTunnel: { url: string; stop: () => void } | null = null
+
+export async function apply(ctx: Context, config?: Config): Promise<void> {
+  const breakpoint = typeof config?.breakpoint === 'number' && config.breakpoint > 0
+    ? config.breakpoint
+    : 768
+  const proxyPort = typeof config?.proxyPort === 'number' ? config.proxyPort : 3081
+  const sectionTitle = config?.title ?? '远程控制'
+
+  /* ---------------- 1) mobile CSS injection ---------------- */
+
+  const cssPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'inject', 'mobile.css')
+  let css = await readFile(cssPath, 'utf8').catch(() => '')
+  if (css.length > 0) {
+    css = css.replace(/__BREAKPOINT__/g, String(breakpoint))
+    // 极简 JS：设置 body viewport class + 兜底恢复
+    const mobileJs = `(function(){
+function setM(){var m=innerWidth<${breakpoint};if(m)document.body.classList.add('rm-x-mobile');else document.body.classList.remove('rm-x-mobile')}
+setM();
+var rt;addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(setM,100)});
+/* 兜底：客户端模块加载失败时恢复桌面布局 */
+setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!document.getElementById('rm-x-dashboard'))document.body.classList.remove('rm-x-mobile')},5000);
+})();`
+    ctx.on('webserver/index-inject', ((table: Array<Record<string, unknown>>) => {
+      table.push({ kind: 'style', text: css })
+      table.push({ kind: 'script', placement: 'body', text: mobileJs })
+      // 设置页标签（client 半）经同源 fetch 消费该 nonce 访问 qr-info
+      table.push({ kind: 'global', name: '__REMOTE_X_NONCE__', value: issueNonce() })
+    }) as never)
+    ctx.logger.info(`dsh-remote-x: mobile layer injected (breakpoint ${breakpoint}px)`)
+  } else {
+    ctx.logger.warn('dsh-remote-x: inject/mobile.css missing — mobile layer disabled')
+  }
+
+  /* ---------------- 2) settings-page QR panel API ---------------- */
+
+  const base = path.dirname(fileURLToPath(import.meta.url))
+
+  const route: WebRoute = {
+    kind: 'prefix',
+    path: '/dsh-remote-x/api',
+    handler: async (req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const sub = url.pathname.replace(/\/+$/, '').slice('/dsh-remote-x/api'.length)
+
+      if (sub === '/qr-info' && req.method === 'GET') {
+        if (!nonceValid(req.headers['x-remote-nonce'])) {
+          sendError(res, 401, 'missing or invalid nonce')
+          return
+        }
+        const ips = lanAddresses()
+        const token = await resolveTokenLazy(ctx, config)
+        const host = ips[0]
+        const accessKey = config?.accessKey
+        const entry = host !== undefined && proxyPort > 0
+          ? accessKey
+            ? `http://${host}:${proxyPort}/k/${encodeURIComponent(accessKey)}/`
+            : token !== undefined
+              ? `http://${host}:${proxyPort}/t/${encodeURIComponent(token)}/`
+              : null
+          : null
+        sendJson(res, 200, {
+          title: sectionTitle,
+          lanIps: ips,
+          proxyPort,
+          tokenDetected: token !== undefined,
+          accessKeySet: accessKey !== undefined,
+          entry,
+          lanEnabled: (() => {
+            try { return execFileSync('systemctl', ['--user', 'is-active', 'dsh-remote-proxy.service'], { encoding: 'utf8' }).trim() === 'active' }
+            catch { return false }
+          })(),
+          publicEnabled: publicTunnel !== null,
+          publicUrl: publicTunnel?.url ?? null,
+          cloudflaredAvailable: (() => {
+            try { execFileSync('cloudflared', ['--version'], { stdio: 'ignore' }); return true }
+            catch { return false }
+          })(),
+          version: '0.2.2',
+        })
+        return
+      }
+
+      if (sub === '/tasks' && req.method === 'GET') {
+        try {
+          sendJson(res, 200, await buildTaskList(ctx))
+        } catch (error) {
+          sendError(res, 500, error instanceof Error ? error.message : String(error))
+        }
+        return
+      }
+
+      if (sub === '/qrcode' && req.method === 'GET') {
+        const text = url.searchParams.get('text') ?? ''
+        if (text.length === 0 || text.length > 512) {
+          sendError(res, 400, 'text 长度需在 1..512 之间')
+          return
+        }
+        if (!/^https?:\/\//i.test(text)) {
+          sendError(res, 400, 'text 必须是 http(s) 链接')
+          return
+        }
+        res.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(await renderQrSvg(text))
+        return
+      }
+
+      if (sub === '/lan-toggle' && req.method === 'POST') {
+        if (!nonceValid(req.headers['x-remote-nonce'])) {
+          sendError(res, 401, 'missing or invalid nonce')
+          return
+        }
+        let raw = ''
+        try { for await (const ch of req) raw += ch } catch {}
+        let body: Record<string, unknown> = {}
+        try { body = JSON.parse(raw) } catch {}
+        const enabled = body.enabled === true
+        try {
+          execFileSync('systemctl', ['--user', enabled ? 'start' : 'stop', 'dsh-remote-proxy.service'], { stdio: 'ignore' })
+          sendJson(res, 200, { ok: true, enabled })
+        } catch (err) {
+          sendError(res, 500, err instanceof Error ? err.message : String(err))
+        }
+        return
+      }
+
+      if (sub === '/public-toggle' && req.method === 'POST') {
+        if (!nonceValid(req.headers['x-remote-nonce'])) {
+          sendError(res, 401, 'missing or invalid nonce')
+          return
+        }
+        let raw = ''
+        try { for await (const ch of req) raw += ch } catch {}
+        let body: Record<string, unknown> = {}
+        try { body = JSON.parse(raw) } catch {}
+        const enabled = body.enabled === true
+        try {
+          if (enabled) {
+            if (!publicTunnel) {
+              // 公网隧道依赖本机 3081 代理；确保它在跑（否则隧道会 502）
+              let proxyActive = false
+              try {
+                proxyActive = execFileSync('systemctl', ['--user', 'is-active', 'dsh-remote-proxy.service'], { encoding: 'utf8' }).trim() === 'active'
+              } catch { /* 非 active */ }
+              if (!proxyActive) execFileSync('systemctl', ['--user', 'start', 'dsh-remote-proxy.service'], { stdio: 'ignore' })
+              const accessKey = config?.accessKey
+              const token = await resolveTokenLazy(ctx, config)
+              const t = await startTunnel(proxyPort, { token: config?.cloudflareToken, domain: config?.publicDomain })
+              const suffix = accessKey
+                ? `/k/${encodeURIComponent(accessKey)}/`
+                : token !== undefined
+                  ? `/t/${encodeURIComponent(token)}/`
+                  : '/'
+              publicTunnel = { url: t.url + suffix, stop: t.stop }
+            }
+            sendJson(res, 200, { ok: true, enabled: true, url: publicTunnel.url })
+          } else {
+            publicTunnel?.stop?.()
+            publicTunnel = null
+            sendJson(res, 200, { ok: true, enabled: false })
+          }
+        } catch (err) {
+          sendError(res, 500, err instanceof Error ? err.message : String(err))
+        }
+        return
+      }
+
+      sendError(res, 404, `no handler for ${req.method} ${url.pathname}`)
+    },
+  }
+
+  ctx.effect(() => {
+    const dispose = ctx.webServer.register(route)
+    return () => {
+      try { publicTunnel?.stop?.() } catch { /* ignore */ }
+      publicTunnel = null
+      dispose()
+    }
+  }, 'dsh-remote-x: api route')
+  ctx.logger.info('dsh-remote-x: QR panel API mounted at /dsh-remote-x/api (token resolved lazily per request)')
+}

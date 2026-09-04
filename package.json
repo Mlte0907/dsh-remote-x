@@ -1,0 +1,55 @@
+{
+  "name": "dsh-remote-x",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness 移动端适配插件（dsh-remote-x）：向网页端注入移动端覆盖层，手机复用网页端全部功能，另附局域网反向代理 CLI",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./dist/client.d.mts",
+      "default": "./dist/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "dsh-remote-x": "bin/dsh-remote-x.mjs"
+  },
+  "files": [
+    "src",
+    "lib",
+    "bin",
+    "inject",
+    "deploy",
+    "cordis.patch.yml"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --out-dir dist --no-config"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^5.0.0",
+    "@deepseek-ai/schemastery": "^4.0.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-modules"
+      ],
+      "platform": "web"
+    }
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,15 @@
+# 临时运行实例：loopback 3099 + 挂载 dsh-remote-x，由 proxy(3081) 暴露给局域网
+- id: webserver
+  config:
+    host: '127.0.0.1'
+    port: 3099
+    compression: gzip
+    compressionLevel: 1
+    compressionThresholdBytes: 1024
+- insert:
+    - id: dsh-remote-x
+      name: 'dsh-remote-x'
+      config:
+        route: /remote
+        title: DeepSeek 远程控制
+        token: '2fgK8RbpaY6jZdED'

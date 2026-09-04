@@ -1,0 +1,5 @@
+- insert:
+    - id: dsh-remote-x
+      name: 'dsh-remote-x'
+      config:
+        accessKey: remx-ee57dc334115

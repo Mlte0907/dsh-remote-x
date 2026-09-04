@@ -1,0 +1,4 @@
+node_modules
+*.log
+.mimosa/
+.DS_Store

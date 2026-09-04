@@ -1,0 +1,430 @@
+/* ============================================================
+   dsh-remote-x — DSH 网页端移动端覆盖层
+   由插件经 webserver/index-inject 注入。
+
+   body class 模型（客户端模块 JS 驱动，纯 CSS 兜底）：
+   - 手机（<768px）：默认隐藏 DSH 桌面框架，显示 #rm-x-dashboard 仪表盘
+   - body.rm-x-in-session：隐藏仪表盘，显示 DSH centerCol + 返回条
+   - 宽屏：全部规则不生效，桌面端零影响
+
+   锚点用 [class*="_suffix"] 后缀匹配（语义后缀全页唯一，hash 前缀会变）。
+   ============================================================ */
+
+/* ---------- 纯 CSS 兜底：JS 未加载前手机不闪桌面框架 ---------- */
+@media (max-width: 767.98px) {
+  [class*="_frame"],
+  [class*="_overlayLayer"] {
+    display: none !important;
+  }
+  html, body {
+    overflow-x: hidden !important;
+  }
+}
+
+/* ---------- 仪表盘 ---------- */
+#rm-x-dashboard {
+  display: none;
+}
+
+/* ---------- 返回条（会话视图顶部） ---------- */
+#rm-x-backbar {
+  display: none;
+}
+
+@media (max-width: 767.98px) {
+
+  /* ---- 仪表盘：手机 + 非会话视图 ---- */
+  body.rm-x-mobile #rm-x-dashboard {
+    --rmx-bg: #fff;
+    --rmx-fg: #1f2328;
+    --rmx-card: rgba(0,0,0,.03);
+    --rmx-card-border: rgba(0,0,0,.12);
+    --rmx-muted: rgba(0,0,0,.45);
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    inset: 0;
+    z-index: 2147483000;
+    background: var(--rmx-bg);
+    color: var(--rmx-fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  body.rm-x-mobile.rm-x-in-session #rm-x-dashboard {
+    display: none !important;
+  }
+
+  /* ---- 会话视图：body 为 flex 容器，back bar + #root 各占正确空间 ---- */
+  body.rm-x-mobile.rm-x-in-session {
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+    overflow: hidden !important;
+  }
+  body.rm-x-mobile.rm-x-in-session #rm-x-backbar {
+    display: flex;
+    position: relative;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 14px;
+    padding-top: calc(env(safe-area-inset-top, 0px) + 10px);
+    background: var(--rmx-bg, #161616);
+    border-bottom: 1px solid rgba(127,127,127,.12);
+    flex-shrink: 0;
+    z-index: 10;
+  }
+  body.rm-x-mobile.rm-x-in-session #root {
+    flex: 1 !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+  .rmx-backbtn {
+    appearance: none;
+    background: none;
+    border: none;
+    color: inherit;
+    font-size: 14px;
+    padding: 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rmx-backarrow { font-size: 16px; line-height: 1; }
+  .rmx-backbar-title {
+    font-size: 14px;
+    font-weight: 400;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ---- 会话视图：显示 DSH centerCol ---- */
+  body.rm-x-mobile.rm-x-in-session [class*="_frame"] {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+  }
+  body.rm-x-mobile.rm-x-in-session [class*="_sidebarCol"],
+  body.rm-x-mobile.rm-x-in-session [class*="_detailsCol"],
+  body.rm-x-mobile.rm-x-in-session [class*="_handle"] {
+    display: none !important;
+  }
+  /* overlay 层不隐藏，推到返回条下方 */
+  body.rm-x-mobile.rm-x-in-session [class*="_overlayLayer"] {
+    position: absolute !important;
+    top: 48px !important;
+    left: 0 !important;
+    right: 0 !important;
+  }
+  body.rm-x-mobile.rm-x-in-session [class*="_centerCol"] {
+    flex: 1 !important;
+    min-width: 0 !important;
+    position: relative !important;
+    padding-top: 48px !important;
+  }
+  /* 推下侧栏切换按钮（dsh-better-sidebar 的浮动按钮） */
+  body.rm-x-mobile.rm-x-in-session [class*="_toggleCluster"],
+  body[data-dsh-sidebar-collapsed] [class*="_toggleCluster"] {
+    top: calc(56px + env(safe-area-inset-top)) !important;
+  }
+
+  /* iOS 底部安全区 */
+  body.rm-x-mobile.rm-x-in-session [class*="_composer"],
+  body.rm-x-mobile.rm-x-in-session [class*="_inputBar"],
+  body.rm-x-mobile.rm-x-in-session [class*="_inputDock"],
+  body.rm-x-mobile.rm-x-in-session [class*="_toolbar"] {
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important;
+  }
+
+  /* 触控目标下限 */
+  body.rm-x-mobile.rm-x-in-session [class*="_iconBtn"] {
+    min-width: 40px !important;
+    min-height: 40px !important;
+  }
+}
+
+/* ---------- 仪表盘组件样式（复用 rmx-* 命名空间） ---------- */
+
+/* 头部 */
+.rmx-header {
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) 18px 12px;
+  flex-shrink: 0;
+}
+.rmx-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--rmx-fg, inherit);
+}
+.rmx-subtitle {
+  margin: 3px 0 0;
+  font-size: 13px;
+  opacity: .5;
+}
+
+/* 区块头 */
+.rmx-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 18px 0;
+}
+.rmx-section-title {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+}
+.rmx-section-tools {
+  display: flex;
+  gap: 4px;
+}
+.rmx-counts {
+  font-size: 12.5px;
+  opacity: .5;
+  padding: 3px 18px 10px;
+}
+.rmx-tool-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(127, 127, 127, .22);
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.rmx-tool-btn:active { background: rgba(127, 127, 127, .14); }
+
+/* 工作区卡片 */
+.rmx-card {
+  border-radius: 16px;
+  border: 1px solid var(--rmx-card-border, rgba(127, 127, 127, .16));
+  background: var(--rmx-card, rgba(127, 127, 127, .04));
+  margin: 0 14px 14px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .05);
+  flex-shrink: 0;
+}
+.rmx-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+}
+.rmx-ws-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  border: 1px solid rgba(127, 127, 127, .2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  flex-shrink: 0;
+  background: rgba(127, 127, 127, .06);
+}
+.rmx-ws-main { flex: 1; min-width: 0; }
+.rmx-ws-name-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.rmx-ws-name {
+  font-size: 15.5px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rmx-ws-badge {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  padding: 1.5px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(127, 127, 127, .28);
+  opacity: .6;
+}
+.rmx-ws-path {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: .45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.rmx-ws-meta { font-size: 12px; opacity: .45; margin-top: 2px; }
+.rmx-ws-count { font-size: 12.5px; opacity: .5; flex-shrink: 0; margin-right: 4px; }
+.rmx-ws-chevron {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  opacity: .5;
+  padding: 8px 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform .15s;
+}
+.rmx-ws-add {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid rgba(127, 127, 127, .24);
+  background: transparent;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.rmx-ws-add:active { background: rgba(127, 127, 127, .14); }
+
+/* 任务列表区 */
+.rmx-tasks {
+  border-top: 1px solid rgba(127, 127, 127, .12);
+}
+.rmx-task {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 11px 14px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.rmx-task:active { background: rgba(127, 127, 127, .1); }
+.rmx-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(127, 127, 127, .35);
+  flex-shrink: 0;
+}
+.rmx-running .rmx-dot {
+  background: #2fbf71;
+  box-shadow: 0 0 6px rgba(47, 191, 113, .7);
+  animation: rmx-pulse 1.2s infinite;
+}
+@keyframes rmx-pulse { 50% { opacity: .4; } }
+.rmx-task-main { flex: 1; min-width: 0; }
+.rmx-task-title {
+  font-size: 14.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rmx-task-time { font-size: 12px; opacity: .45; margin-top: 2px; }
+.rmx-task-badge {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+.rmx-badge-done {
+  background: rgba(46, 160, 67, .14);
+  color: #2ea043;
+  border: 1px solid rgba(46, 160, 67, .35);
+}
+.rmx-badge-run {
+  background: rgba(47, 129, 247, .12);
+  color: #4493f8;
+  border: 1px solid rgba(47, 129, 247, .35);
+}
+.rmx-badge-blank {
+  background: rgba(127, 127, 127, .08);
+  border: 1px solid rgba(127, 127, 127, .22);
+  opacity: .6;
+}
+
+/* 长按菜单 */
+.rmx-menu {
+  position: fixed;
+  z-index: 2147483647;
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  border: 1px solid rgba(127,127,127,.2);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.18);
+  overflow: hidden;
+  min-width: 140px;
+  animation: rmx-menu-in .12s ease;
+}
+@keyframes rmx-menu-in { from { opacity: 0; transform: scale(.92); } }
+.rmx-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.rmx-menu-item:active { background: rgba(127,127,127,.1); }
+.rmx-menu-item.danger { color: #cf222e; }
+.rmx-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+}
+
+/* 空状态 */
+.rmx-empty {
+  padding: 14px;
+  font-size: 13px;
+  opacity: .45;
+  text-align: center;
+}
+.rmx-empty-all {
+  padding: 60px 20px;
+  text-align: center;
+  opacity: .4;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+/* ---------- 深色主题 ---------- */
+/* 方案1: DSH 主动设置 data-ds-dark-theme */
+html[data-ds-dark-theme] body.rm-x-mobile #rm-x-dashboard {
+  --rmx-bg: #161618;
+  --rmx-fg: #e6e6e6;
+  --rmx-card: rgba(255,255,255,.05);
+  --rmx-card-border: rgba(255,255,255,.12);
+  --rmx-muted: rgba(255,255,255,.45);
+}
+/* 方案2: 用户系统偏好（DSH 未设置时的兜底） */
+@media (prefers-color-scheme: dark) {
+  html:not([data-ds-light-theme]):not([data-ds-dark-theme]) body.rm-x-mobile #rm-x-dashboard {
+    --rmx-bg: #161618;
+    --rmx-fg: #e6e6e6;
+    --rmx-card: rgba(255,255,255,.05);
+    --rmx-card-border: rgba(255,255,255,.12);
+    --rmx-muted: rgba(255,255,255,.45);
+  }
+}
+
+/* ---------- 宽屏隐藏所有移动端部件 ---------- */
+@media (min-width: 769px) {
+  #rm-x-backbar,
+  #rm-x-dashboard { display: none !important; }
+}
