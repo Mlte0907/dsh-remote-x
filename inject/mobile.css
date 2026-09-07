@@ -18,6 +18,17 @@
   }
   html, body {
     overflow-x: hidden !important;
+    /* 禁用浏览器边缘滑动历史导航（Chrome 97+）：否则左右滑都被浏览器
+       "退到上一页"抢走，移动层自己的滑动手势永远收不到。iOS Safari
+       的边缘返回无解，但页面中部滑动不受影响。 */
+    overscroll-behavior-x: none !important;
+    /* 关键：声明页面只消费纵向平移——横向触摸手势（含浏览器历史导航）
+       不再被浏览器接管，交给页面 JS。iOS Safari 13+/Chrome 全支持。 */
+    touch-action: pan-y !important;
+  }
+  #root {
+    overscroll-behavior-x: none !important;
+    touch-action: pan-y !important;
   }
 }
 
@@ -33,13 +44,17 @@
 
 @media (max-width: 767.98px) {
 
-  /* ---- 仪表盘：手机 + 非会话视图 ---- */
-  body.rm-x-mobile #rm-x-dashboard {
+  /* ---- 主题令牌：定义在 body 上，仪表盘/返回条/长按菜单全部继承 ---- */
+  body.rm-x-mobile {
     --rmx-bg: #fff;
     --rmx-fg: #1f2328;
     --rmx-card: rgba(0,0,0,.03);
     --rmx-card-border: rgba(0,0,0,.12);
     --rmx-muted: rgba(0,0,0,.45);
+  }
+
+  /* ---- 仪表盘：手机 + 非会话视图 ---- */
+  body.rm-x-mobile #rm-x-dashboard {
     display: flex;
     flex-direction: column;
     position: fixed;
@@ -72,7 +87,10 @@
     gap: 6px;
     padding: 10px 14px;
     padding-top: calc(env(safe-area-inset-top, 0px) + 10px);
-    background: var(--rmx-bg, #161616);
+    /* 右侧避让 better-sidebar 的切换按钮（已上移到本栏行内） */
+    padding-right: 56px;
+    background: var(--rmx-bg, #fff);
+    color: var(--rmx-fg, #1f2328);
     border-bottom: 1px solid rgba(127,127,127,.12);
     flex-shrink: 0;
     z-index: 10;
@@ -131,10 +149,16 @@
     position: relative !important;
     padding-top: 48px !important;
   }
-  /* 推下侧栏切换按钮（dsh-better-sidebar 的浮动按钮） */
-  body.rm-x-mobile.rm-x-in-session [class*="_toggleCluster"],
+  /* 侧栏切换按钮（dsh-better-sidebar）：上移到返回条行内（右侧），不再悬在下方 */
+  body.rm-x-mobile.rm-x-in-session [class*="_toggleCluster"] {
+    top: calc(env(safe-area-inset-top, 0px) + 10px) !important;
+  }
   body[data-dsh-sidebar-collapsed] [class*="_toggleCluster"] {
     top: calc(56px + env(safe-area-inset-top)) !important;
+  }
+  /* 呼出的侧栏面板：顶到返回条下方展开，不再遮挡返回条 */
+  body.rm-x-mobile.rm-x-in-session [class*="_panel"]:not([class*="_panelHidden"]) {
+    top: calc(env(safe-area-inset-top, 0px) + 49px) !important;
   }
 
   /* iOS 底部安全区 */
@@ -404,8 +428,9 @@
 }
 
 /* ---------- 深色主题 ---------- */
-/* 方案1: DSH 主动设置 data-ds-dark-theme */
-html[data-ds-dark-theme] body.rm-x-mobile #rm-x-dashboard {
+/* 方案1: DSH 主动设置 data-ds-dark-theme（theme-presenter 设在 body；html 兼容保留） */
+html[data-ds-dark-theme] body.rm-x-mobile,
+body[data-ds-dark-theme].rm-x-mobile {
   --rmx-bg: #161618;
   --rmx-fg: #e6e6e6;
   --rmx-card: rgba(255,255,255,.05);
@@ -414,7 +439,8 @@ html[data-ds-dark-theme] body.rm-x-mobile #rm-x-dashboard {
 }
 /* 方案2: 用户系统偏好（DSH 未设置时的兜底） */
 @media (prefers-color-scheme: dark) {
-  html:not([data-ds-light-theme]):not([data-ds-dark-theme]) body.rm-x-mobile #rm-x-dashboard {
+  html:not([data-ds-light-theme]):not([data-ds-dark-theme]) body.rm-x-mobile,
+  body:not([data-ds-light-theme]):not([data-ds-dark-theme]).rm-x-mobile {
     --rmx-bg: #161618;
     --rmx-fg: #e6e6e6;
     --rmx-card: rgba(255,255,255,.05);

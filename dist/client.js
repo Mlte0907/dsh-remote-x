@@ -13,12 +13,14 @@ function factoryBody(require2) {
   var useEffect = React.useEffect;
   var h = React.createElement;
 
+  /* 设置页配色走 DSH 主题令牌（深浅主题自动跟随），fallback 保留浅色值 */
   var C = {
-    text: '#1f2328', sub: '#656d76', card: '#f6f8fa', cardStrong: '#eef1f4',
-    border: '#d0d7de', borderStrong: '#afb8c1',
-    accent: '#1a7f37', accentText: '#1a7f37', accentDim: '#dafbe1',
-    danger: '#cf222e', dangerText: '#cf222e', dangerDim: '#ffebe9',
-    warn: '#9a6700', warnDim: '#fff8c5', radius: 14,
+    text: 'var(--dsw-alias-label-primary, #1f2328)', sub: 'var(--dsw-alias-label-secondary, #656d76)',
+    card: 'rgba(127,127,127,.07)', cardStrong: 'rgba(127,127,127,.13)',
+    border: 'var(--dsw-alias-border-l2, #d0d7de)', borderStrong: 'var(--dsw-alias-border-l1, #afb8c1)',
+    accent: 'var(--dsw-alias-state-business-primary, #1a7f37)', accentText: 'var(--dsw-alias-state-business-primary, #1a7f37)', accentDim: 'rgba(103,158,254,.14)',
+    danger: 'var(--dsw-alias-state-error-primary, #cf222e)', dangerText: 'var(--dsw-alias-state-error-primary, #cf222e)', dangerDim: 'rgba(242,90,90,.12)',
+    warn: 'var(--dsw-alias-state-warning-primary, #9a6700)', warnDim: 'rgba(245,166,35,.12)', radius: 14,
   };
 
   function Toggle(props) {
@@ -26,7 +28,7 @@ function factoryBody(require2) {
       type: 'button', role: 'switch', 'aria-checked': props.on, title: props.title,
       disabled: props.busy === true, onClick: props.onChange,
       style: { width: 42, height: 24, borderRadius: 999, border: 'none', padding: 0,
-        cursor: props.busy ? 'wait' : 'pointer', background: props.on ? C.accent : '#c9d1d9',
+        cursor: props.busy ? 'wait' : 'pointer', background: props.on ? C.accent : 'rgba(127,127,127,.35)',
         position: 'relative', transition: 'background .2s', flexShrink: 0, opacity: props.busy ? 0.7 : 1 },
     }, h('span', { style: { position: 'absolute', top: 3, left: props.on ? 21 : 3, width: 18, height: 18,
       borderRadius: '50%', background: '#fff', boxShadow: '0 1px 2px rgbadebugLog(0,0,0.25)', transition: 'left .2s' } }));
@@ -104,7 +106,7 @@ function factoryBody(require2) {
       ready && h('div', { style: { marginTop: 18, display: 'flex', flexDirection: 'column', gap: 12 } },
         tips.map(function(t, i) { return h('div', { key: String(i), style: { display: 'flex', alignItems: 'flex-start', gap: 12, fontSize: 13, color: C.sub, lineHeight: 1.5 } },
           h('span', { style: { fontSize: 15, flexShrink: 0 } }, t.icon), h('span', null, t.text)); })),
-      h('div', { style: { marginTop: 24, padding: 20, borderRadius: 16, background: '#fff', border: '1px solid ' + C.border } },
+      h('div', { style: { marginTop: 24, padding: 20, borderRadius: 16, background: C.cardStrong, border: '1px solid ' + C.border } },
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 } },
           h('div', { style: { flex: 1 } }, h('div', { style: { fontSize: 16, fontWeight: 600 } }, '公网访问'), h('div', { style: { fontSize: 12.5, color: C.sub, marginTop: 2 } }, '人在外面也能连（cloudflared 隧道）')),
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } }, badge(publicOn), h(Toggle, { on: publicOn, onChange: togglePublic, busy: publicBusy, title: '公网访问' }))),
@@ -112,7 +114,11 @@ function factoryBody(require2) {
         publicOn && publicUrl && h('div', { style: { marginTop: 14, display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 12, background: C.card, border: '1px solid ' + C.border } },
           h('span', { style: { opacity: 0.7 } }, '🌐'),
           h('code', { style: { flex: 1, fontSize: 12.5, fontFamily: 'ui-monospace, Menlo, monospace', wordBreak: 'break-all', color: C.text } }, publicUrl),
-          h('button', { onClick: copyPublic, style: { fontSize: 12.5, padding: '6px 14px', borderRadius: 8, border: '1px solid ' + C.borderStrong, background: C.card, color: C.text } }, '复制'))));
+          h('button', { onClick: copyPublic, style: { fontSize: 12.5, padding: '6px 14px', borderRadius: 8, border: '1px solid ' + C.borderStrong, background: C.card, color: C.text } }, '复制')),
+        publicOn && publicUrl && h('div', { style: { marginTop: 14, display: 'flex', gap: 14, alignItems: 'center', padding: '12px 14px', borderRadius: 12, background: C.card, border: '1px solid ' + C.border } },
+          h('div', { style: { padding: 8, background: '#fff', borderRadius: 8, flexShrink: 0 } },
+            h('img', { src: '/dsh-remote-x/api/qrcode?text=' + encodeURIComponent(publicUrl), width: 132, height: 132, alt: '公网访问二维码', style: { display: 'block' } })),
+          h('div', { style: { fontSize: 12.5, color: C.sub, lineHeight: 1.7 } }, '手机扫码经公网隧道打开控制台（无需同一局域网）'))));
   }
 
   /* ==================================================================
@@ -151,22 +157,26 @@ function factoryBody(require2) {
     };
 
     /* ---- 主题同步 ---- */
+    /* 变量设到 body 上：仪表盘、返回条(#rm-x-backbar)、长按菜单全部继承。
+     * 主题属性以 body 为准（theme-presenter 设在 body），html 检查保留兼容。 */
     function syncTheme() {
-      if (!dashEl) return;
-      var dark = document.documentElement.hasAttribute('data-ds-dark-theme')
-        || (!document.documentElement.hasAttribute('data-ds-light-theme') && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      var dark = document.body.hasAttribute('data-ds-dark-theme')
+        || document.documentElement.hasAttribute('data-ds-dark-theme')
+        || (!(document.body.hasAttribute('data-ds-light-theme') || document.documentElement.hasAttribute('data-ds-light-theme'))
+          && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      var target = document.body.style;
       if (dark) {
-        dashEl.style.setProperty('--rmx-bg', '#161618');
-        dashEl.style.setProperty('--rmx-fg', '#e6e6e6');
-        dashEl.style.setProperty('--rmx-card', 'rgba(255,255,255,.05)');
-        dashEl.style.setProperty('--rmx-card-border', 'rgba(255,255,255,.12)');
-        dashEl.style.setProperty('--rmx-muted', 'rgba(255,255,255,.45)');
+        target.setProperty('--rmx-bg', '#161618');
+        target.setProperty('--rmx-fg', '#e6e6e6');
+        target.setProperty('--rmx-card', 'rgba(255,255,255,.05)');
+        target.setProperty('--rmx-card-border', 'rgba(255,255,255,.12)');
+        target.setProperty('--rmx-muted', 'rgba(255,255,255,.45)');
       } else {
-        dashEl.style.setProperty('--rmx-bg', '#fff');
-        dashEl.style.setProperty('--rmx-fg', '#1f2328');
-        dashEl.style.setProperty('--rmx-card', 'rgba(0,0,0,.03)');
-        dashEl.style.setProperty('--rmx-card-border', 'rgba(0,0,0,.12)');
-        dashEl.style.setProperty('--rmx-muted', 'rgba(0,0,0,.45)');
+        target.setProperty('--rmx-bg', '#fff');
+        target.setProperty('--rmx-fg', '#1f2328');
+        target.setProperty('--rmx-card', 'rgba(0,0,0,.03)');
+        target.setProperty('--rmx-card-border', 'rgba(0,0,0,.12)');
+        target.setProperty('--rmx-muted', 'rgba(0,0,0,.45)');
       }
     }
     // 监听 DSH 主题属性变化
@@ -480,6 +490,40 @@ function factoryBody(require2) {
     }
 
     function debugLog() {}
+
+    /* ---- 左滑手势：会话视图内水平左滑 → 返回任务会话列表 ---- */
+    /* document 级绑定一次（mobileLayer 只装配一次）；passive 不阻塞纵向滚动。
+     * 双通道判定：touchmove 长滑即时返回 + touchend 轻扫兜底（快扫时
+     * touchmove 次数少、位移不足，end 时按总位移判定）。
+     * 阈值 48px / 横纵比 1.3，按真机手感放宽。 */
+    var swipeStart = null;
+    /* 捕获阶段监听：先于任何组件拿到触摸，避免被 stopPropagation 截胡 */
+    document.addEventListener('touchstart', function(e) {
+      swipeStart = null;
+      if (!isMobile() || !document.body.classList.contains('rm-x-in-session')) return;
+      if (e.touches.length !== 1) return;
+      var t = e.touches[0];
+      var el = e.target;
+      if (el && el.closest && el.closest('textarea, input, [contenteditable="true"]')) return;
+      swipeStart = { x: t.clientX, y: t.clientY };
+    }, { passive: true, capture: true });
+    function swipeDone(t) {
+      if (!swipeStart) return;
+      var dx = t.clientX - swipeStart.x;
+      var dy = t.clientY - swipeStart.y;
+      swipeStart = null;
+      if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+        try { exitToDashboard(); } catch (e2) {}
+      }
+    }
+    document.addEventListener('touchmove', function(e) {
+      if (swipeStart) swipeDone(e.touches[0]);
+    }, { passive: true, capture: true });
+    document.addEventListener('touchend', function(e) {
+      if (e.changedTouches && e.changedTouches.length > 0) swipeDone(e.changedTouches[0]);
+      swipeStart = null;
+    }, { passive: true, capture: true });
+    document.addEventListener('touchcancel', function() { swipeStart = null; }, { passive: true, capture: true });
 
     function showFrame() {
       var f = pickEl(SEL_FRAME);

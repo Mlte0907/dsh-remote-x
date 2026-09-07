@@ -2,3 +2,4 @@ node_modules
 *.log
 .mimosa/
 .DS_Store
+.playwright-cli/

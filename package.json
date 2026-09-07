@@ -51,5 +51,8 @@
       "platform": "web"
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
 }
