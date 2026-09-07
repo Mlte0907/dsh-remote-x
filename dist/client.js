@@ -491,40 +491,6 @@ function factoryBody(require2) {
 
     function debugLog() {}
 
-    /* ---- 左滑手势：会话视图内水平左滑 → 返回任务会话列表 ---- */
-    /* document 级绑定一次（mobileLayer 只装配一次）；passive 不阻塞纵向滚动。
-     * 双通道判定：touchmove 长滑即时返回 + touchend 轻扫兜底（快扫时
-     * touchmove 次数少、位移不足，end 时按总位移判定）。
-     * 阈值 48px / 横纵比 1.3，按真机手感放宽。 */
-    var swipeStart = null;
-    /* 捕获阶段监听：先于任何组件拿到触摸，避免被 stopPropagation 截胡 */
-    document.addEventListener('touchstart', function(e) {
-      swipeStart = null;
-      if (!isMobile() || !document.body.classList.contains('rm-x-in-session')) return;
-      if (e.touches.length !== 1) return;
-      var t = e.touches[0];
-      var el = e.target;
-      if (el && el.closest && el.closest('textarea, input, [contenteditable="true"]')) return;
-      swipeStart = { x: t.clientX, y: t.clientY };
-    }, { passive: true, capture: true });
-    function swipeDone(t) {
-      if (!swipeStart) return;
-      var dx = t.clientX - swipeStart.x;
-      var dy = t.clientY - swipeStart.y;
-      swipeStart = null;
-      if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.3) {
-        try { exitToDashboard(); } catch (e2) {}
-      }
-    }
-    document.addEventListener('touchmove', function(e) {
-      if (swipeStart) swipeDone(e.touches[0]);
-    }, { passive: true, capture: true });
-    document.addEventListener('touchend', function(e) {
-      if (e.changedTouches && e.changedTouches.length > 0) swipeDone(e.changedTouches[0]);
-      swipeStart = null;
-    }, { passive: true, capture: true });
-    document.addEventListener('touchcancel', function() { swipeStart = null; }, { passive: true, capture: true });
-
     function showFrame() {
       var f = pickEl(SEL_FRAME);
       if (!f) { debugLog('showFrame: frame not found'); return; }

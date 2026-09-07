@@ -18,17 +18,12 @@
   }
   html, body {
     overflow-x: hidden !important;
-    /* 禁用浏览器边缘滑动历史导航（Chrome 97+）：否则左右滑都被浏览器
-       "退到上一页"抢走，移动层自己的滑动手势永远收不到。iOS Safari
-       的边缘返回无解，但页面中部滑动不受影响。 */
+    /* 禁用浏览器边缘滑动历史导航：误触左右滑不会莫名"退到上一页"
+      （Chrome 97+；iOS Safari 边缘返回为系统行为，页面无法干预）。 */
     overscroll-behavior-x: none !important;
-    /* 关键：声明页面只消费纵向平移——横向触摸手势（含浏览器历史导航）
-       不再被浏览器接管，交给页面 JS。iOS Safari 13+/Chrome 全支持。 */
-    touch-action: pan-y !important;
   }
   #root {
     overscroll-behavior-x: none !important;
-    touch-action: pan-y !important;
   }
 }
 

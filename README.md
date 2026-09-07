@@ -1,133 +1,93 @@
-# dsh-remote-x — DeepSeek Harness 的移动端远程控制插件
+# dsh-remote-x — DeepSeek Harness 远程控制与移动端覆盖层
 
-把 [dsh 远程控制端](https://dsh.z.ai)（DSH 桌面端的移动远程控制页面）**一比一复刻**为
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Cordis 插件：在 Harness 自带的
-Web 服务器上挂载一个手机 / 平板优先的远程控制页面，随时随地查看和驱动你的 Harness 任务。
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Cordis 插件，两部分能力：
 
-## 功能对照（与 DSH 移动端远程控制）
+1. **远程控制中心**（设置页标签）—— 局域网 / 公网两条通路随时接管你的 Harness：扫码即连、
+   cloudflared 隧道一键开关、访问二维码直接可扫。
+2. **移动端全覆盖界面**（<768px 自动生效）—— 把 DSH 网页端在手机上变成原生 App 观感的
+   任务仪表盘 + 会话视图：按工作区分组的任务卡、运行状态实时刷新、顶部返回栏、
+   深浅主题与 DSH 全程同步。
 
-| DSH 功能 | 本插件实现 |
+> 桌面端（≥768px）零影响：全部覆盖规则在窄屏媒体查询内，宽屏看不到任何移动端部件。
+
+## 功能
+
+### 远程控制（设置页「远程控制」标签）
+
+| 能力 | 说明 |
 | --- | --- |
-| 设备上的工作区 / 任务仪表盘（手机布局） | ✅ 按工作目录分组的任务卡片，运行状态圆点与「运行中」徽标 |
-| 任务会话实时视图（思考 / 工具 / 流式回复） | ✅ 订阅 `session/event`：思考行（可展开）、终端 / 读取 / 搜索等工具行（正在执行 → 已完成）、逐字输出 |
-| 「工作中 X 分 Y 秒」计时 | ✅ 由 `turn/start` / `turn/end` 驱动 |
-| 首页聊天输入卡（项目 / 模式 / 模型 / 优先级 / 发送） | ✅ 项目选择器、模型目录（`ctx.llm`）、推理强度映射 `reasoningEffort` |
-| 发送模式 | ✅ 「变更前确认」= 排队（`agent.followup`）；「立即打断」= 插入当前执行（`agent.steer`） |
-| 继续输入以排队后续修改 + 停止生成 | ✅ 排队 / 打断发送 + `agent.cancel`（保留队列） |
-| 任务「⋯」菜单 | ✅ 重命名（优先走 Harness `sessionTitle` 服务持久化，无服务时本地生效）+ 复制标题 |
-| 新建任务（Ctrl+N）、搜索（Ctrl+K 命令面板） | ✅ 命令面板：新建 / 刷新 / 切换主题 / 打开任务 / 停止任务 |
-| 插件市场、归档、筛选排序、添加上下文 | 🚧 占位入口（Harness 侧对应能力尚在演进，按钮给出提示） |
-| 明暗主题 | ✅ 跟随 DSH 配色的双主题，选择持久化 |
-| 任务命名 | ✅ 取第一条用户消息（与 DSH 行为一致），冷会话优先读取标题投影 |
+| 扫码接入 | 局域网地址实时渲染为二维码，手机相机直扫 |
+| 局域网访问 | 一键开关反向代理（默认端口 `3081`），自动探测本机所有局域网 IP，多 IP 可切换 |
+| 公网访问 | cloudflared 隧道一键开关，公网 URL 即时显示，**并渲染公网二维码**——人在外面扫码即用，无需同一局域网 |
+| 复制链接 | 局域网 / 公网地址一键复制 |
+| 主题 | 全部配色走 DSH 设计令牌（`--dsw-alias-*`），深浅主题自动跟随 |
 
-> 介绍 DSH 的桌面大屏布局同样还原：≥768px 显示侧边栏（新建任务 / 搜索 / 插件市场 / 项目分组任务列表 /
-> 底部账号区）+ 居中问候语与输入卡 + 快捷指令（周报总结 / 报错修复 / PPT 制作）。
+### 移动端覆盖层
 
-## 目录结构
+| 能力 | 说明 |
+| --- | --- |
+| 任务仪表盘 | 按工作区分组的任务卡片（工作区名 / 路径 / 任务数 / 最近活跃），运行中绿点脉冲、「进行中 / 新会话 / 已完成」徽标 |
+| 任务操作 | 点击进入会话；长按任务行弹出菜单（打开 / 删除）；分组折叠展开；单列 / 分组视图切换；全部折叠 / 展开；手动刷新 |
+| 会话视图 | 顶部**返回栏**（一键返回任务列表，配色随主题）；DSH 会话主体全屏呈现，底部安全区适配 |
+| 误触防护 | 屏蔽浏览器边缘滑动历史导航（左右滑不会莫名退回上一页） |
+| 实时同步 | 订阅 `sessions` / `workspaces` 服务，任务状态变化自动刷新；浏览器刷新后保持当前视图（sessionStorage） |
+| 主题同步 | MutationObserver 监听 DSH 主题属性，深浅切换即时跟随（返回栏 / 仪表盘 / 长按菜单全量） |
+| 升级容错 | 会话字段 / DSH 组件类名漂移时按候选顺序回退探测；数据未就绪显示加载态而非假空白——**永不白屏** |
+
+### 已知边界
+
+- 公网访问需要本机安装 [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)。
+- iOS Safari **屏幕边缘**的系统返回手势属浏览器行为，页面无法禁用；页面中部滑动无影响。
+
+## 架构
 
 ```
 dsh-remote-x/
-├── package.json          # dsh bundle 描述（dsh.bundle.patch）
-├── cordis.patch.yml      # cordis.yml 覆盖层（insert 本插件）
-├── src/index.ts          # 宿主插件：webServer 路由 + 会话驱动 + SSE
-├── client/               # 纯静态前端（无构建步骤）
-│   ├── index.html
-│   ├── styles.css        # 取自 DSH 实测的设计令牌（见文末）
-│   └── app.js            # 数据层双驱动：ApiDriver(fetch+SSE) / MockDriver(演示)
-├── mock/preview.mjs      # 无 Harness 时的独立预览服务器（可选）
-└── README.md
+├── src/index.ts        # 宿主插件：mobile CSS 注入(webserver/index-inject) +
+│                       #   qr-info / qrcode / lan-toggle / public-toggle API +
+│                       #   局域网反向代理(3081) + cloudflared 隧道管理
+├── inject/mobile.css   # 移动端纯 CSS 覆盖层（body class 模型，宽屏零影响）
+├── dist/client.js      # 客户端模块：设置页 section + 移动层
+│                       #   （sessions/workspaces 订阅驱动，手写无构建依赖）
+└── dist/index.mjs      # 宿主构建产物（tsdown）
 ```
 
-## 快速开始
+- 客户端经 DSH 模块加载器按需加载，服务依赖：`sessions` / `workspaces` / `slots` / `modules`。
+- 移动层对 DSH 的所有 DOM 触点都走**后缀锚点**（`[class*="_frame"]` 等，语义后缀全页唯一）
+  与**兼容层**（`pick()` 多字段回退），宿主升级时优先降级而非白屏。
 
-### A. 接入真实 Harness（推荐）
-
-Harness 以源码方式运行插件（`node --import tsx/esm`），因此无需构建：
+## 安装
 
 ```sh
-# 1. 编辑 cordis.patch.yml，把 name 改为 src/index.ts 的绝对路径
-#    例如：name: 'C:/Users/sun_w/.dsh/workspace/default/dsh-remote-x/src/index.ts'
-
-# 2. 启动 Web UI 并挂载插件
-pnpm dsh web --patch /绝对路径/dsh-remote-x/cordis.patch.yml
-
-# 3. 手机 / 平板 / 电脑浏览器打开
-#    http://127.0.0.1:3080/remote
+dsh plugin --profile web add ./dsh-remote-x
 ```
 
-安装为 npm bundle 亦可：`dsh plugin --profile <name> add ./dsh-remote-x`，
-然后把覆盖层里的 `name` 改为包名 `dsh-remote-x`。
-
-### B. 仅预览界面（无需 Harness）
-
-```sh
-node mock/preview.mjs        # http://127.0.0.1:4173/remote
-# 或直接用浏览器打开 client/index.html?mock=1（演示模式自动启用）
-```
-
-连接不到宿主 API 时页面会自动降级为演示模式（MockDriver），完整模拟
-任务列表、创建任务、SSE 流式回复与停止生成。
+安装后重启宿主即可；手机与电脑同一局域网时，用设置页二维码扫码访问。
 
 ## 插件配置
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `route` | `/remote` | 挂载路径（页面与 API 都在其下） |
-| `title` | `DeepSeek 远程控制` | 页面标题 |
-| `token` | 无 | 可选访问口令；设置后所有请求需带 `?token=` 或 `x-remote-token` 头 |
+| `breakpoint` | `768` | 移动端布局判定宽度（px） |
+| `proxyPort` | `3081` | 局域网反向代理端口 |
+| `title` | `远程控制` | 设置页标签标题 |
+| `accessKey` | 无 | 公网/局域网链接使用 `/k/<key>/` 形式，免去 token 轮换 |
 
-```yaml
-- insert:
-    - id: dsh-remote-x
-      name: '/绝对路径/dsh-remote-x/src/index.ts'
-      config:
-        route: /remote
-        token: my-secret
-```
-
-## 宿主 API（插件自身提供）
+## 插件 API（全部经 nonce 防护）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/remote/api/bootstrap` | 标题、默认 cwd、模型目录（providers × models）、默认模型 |
-| GET | `/remote/api/tasks` | 任务列表（live + 持久化，按 cwd 分组、含运行状态与最近活跃时间） |
-| POST | `/remote/api/tasks` | 新建任务（`cwd` / `provider` / `model` / `reasoningEffort`） |
-| GET | `/remote/api/tasks/:id` | 任务详情（事件投影为 user / assistant / tool 记录） |
-| POST | `/remote/api/tasks/:id/messages` | 发送消息（`mode: 'queue' \| 'steer'`） |
-| POST | `/remote/api/tasks/:id/cancel` | 停止当前回合（保留收件箱） |
-| POST | `/remote/api/tasks/:id/rename` | 重命名任务（`{ title }`） |
-| GET | `/remote/api/events?sessionId=` | SSE：`snapshot`（历史投影）+ `session-event`（实时事件） |
-
-## 实现要点（对齐 Harness 源码）
-
-- 插件形如 Harness 官方教程：`export const name / inject / apply(ctx, config)`，
-  `inject = ['webServer', 'agents', 'llm']`；路由通过
-  `ctx.effect(() => ctx.webServer.register(route), 'dsh-remote-x: page route')` 注册，随插件卸载自动清理。
-- 会话创建 / 发送 / 停止与 `packages/api/session-controller` 的 commands 同款：
-  `ctx.agents.create({ sessionId, meta: { cwd }, agentOptions })`、
-  `createUserMessage({ content, source })` + `agent.followup / steer`、
-  `agent.cancel({ kind: 'user' }, { keepInbox: true })`。
-- 实时流来自 `ctx.on('session/event', …)`（逐连接订阅、断开即释放）；SSE 不经过 gzip 管道。
-- 模型目录来自 `ctx.llm.listProviders() / listModels()`；默认模型尝试 `ctx.agentDefaultModel`。
-- 任务列表合并 `ctx.sessions.list()` 与可选的 `ctx.sessionQuery.listSessions()`（含持久化会话）。
+| GET | `/dsh-remote-x/api/qr-info` | 入口地址、局域网 IP 列表、LAN/公网开关状态、token 检测 |
+| GET | `/dsh-remote-x/api/qrcode?text=` | 自渲染 QR SVG（纯矩阵核心，无图片依赖） |
+| POST | `/dsh-remote-x/api/lan-toggle` | 局域网代理开关 |
+| POST | `/dsh-remote-x/api/public-toggle` | cloudflared 公网隧道开关（返回公网 URL） |
 
 ## 安全说明
 
-- Harness 的 Web 服务器默认只绑定 `127.0.0.1`（`--host 0.0.0.0` 被官方刻意拒绝）。
-  想在手机上访问，请使用 SSH 隧道 / 反向代理，并**务必**配置 `token`。
-- 审批（变更前确认）决策仍由 Harness 自身的 approval 管道处理；远程页面会把
-  `approval/asked` 事件显示为时间线提示。
+- Harness 后端保持默认 `127.0.0.1` 绑定不变；对手机暴露的只有 3081 代理与隧道出口。
+- 所有插件 API 要求 `x-remote-nonce`（页面注入的一次性值）；代理入口可选 `accessKey`。
+- 公网隧道链接含访问凭据，请勿公开分享；泄露时在设置页关闭公网开关重建。
 
-## 设计令牌（实测自 dsh 远程控制端 v4）
+## License
 
-背景 `rgb(22,22,22)` · 前景 `oklch(0.87 0 0)`（次级 60% / 30%）· 卡片 `rgb(43,43,43)` /
-`rgb(32,32,32)` · 边框 `rgba(255,255,255,.1)` · 强调蓝 `oklch(.865 .127 207)` ·
-绿 `rgb(70,191,114)` · 橙 `rgb(255,138,48)` · 危险 `rgb(255,92,92)` ·
-圆角 8px / 胶囊 999px · Inter 字体 · 基准字号 14px · 头部高度 48px。
-
-## 已知边界
-
-- 模型 / 推理强度在**创建任务时**生效；Harness 暂未提供进程内的会话级换模型 API。
-- 图片 / 文件上下文、归档等待 Harness 能力开放后接入。
-- 冷（未附加）会话可查看历史，但发送 / 重命名需要任务处于运行中的 Harness 实例
-  （无 `sessionTitle` 服务时重命名仅在本插件内生效）。
+MIT
