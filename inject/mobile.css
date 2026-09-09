@@ -449,3 +449,27 @@ body[data-ds-dark-theme].rm-x-mobile {
   #rm-x-backbar,
   #rm-x-dashboard { display: none !important; }
 }
+
+/* ---------- 可访问性：减少动画适配 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  #rm-x-dashboard *,
+  #rm-x-backbar * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------- 可访问性：焦点可见 + 触摸目标 ---------- */
+#rm-x-dashboard button:focus-visible,
+#rm-x-backbar button:focus-visible {
+  outline: 2px solid #4d9fff !important;
+  outline-offset: 2px !important;
+}
+
+#rm-x-dashboard .rmx-tool-btn,
+#rm-x-dashboard .rmx-backbtn,
+#rm-x-dashboard .rmx-menu-item {
+  min-width: 44px;
+  min-height: 44px;
+}

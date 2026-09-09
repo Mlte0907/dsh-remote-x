@@ -19,8 +19,8 @@ set -euo pipefail
 
 INSTALL_DIR="${1:-$HOME/dsh-remote}"
 PORT="${PORT:-3080}"
-NODE_VERSION="v24.20.0"
 PLUGIN_SRC="$(cd "$(dirname "$0")/.." && pwd)"
+NODE_VERSION="v$(grep -o '"node": *"[^"]*"' "$PLUGIN_SRC/package.json" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo '22.19.0')"
 
 log() { printf '\n\033[1;36m[deploy]\033[0m %s\n' "$*"; }
 
@@ -65,7 +65,13 @@ if ! command -v node >/dev/null 2>&1; then
   fi
   export PATH="$NODE_DIR/bin:$PATH"
 fi
-log "node $(node -v)"
+CURRENT_NODE_V="$(node -v 2>/dev/null || echo 'v0.0.0')"
+CURRENT_MAJOR="${CURRENT_NODE_V#v}"; CURRENT_MAJOR="${CURRENT_MAJOR%%.*}"
+if [ "${CURRENT_MAJOR:-0}" -ge 22 ] 2>/dev/null; then
+  log "node $CURRENT_NODE_V ✓（满足 engines.node）"
+else
+  log "警告: node $CURRENT_NODE_V 可能不满足 engines.node ≥22，继续执行但可能出现兼容问题"
+fi
 
 # ---------- 2. 定位 Harness 源码（预装优先） ----------
 HARNESS_DIR="${HARNESS_DIR:-}"

@@ -35,6 +35,122 @@ function factoryBody(require2) {
   }
 
   /* ==================================================================
+   * 生命周期 / 增量渲染 / 虚拟列表 工具类
+   * ================================================================== */
+  function DisposableRegistry() {
+    var items = [];
+    this.register = function(r) { items.push(r); return r; };
+    this.registerTimer = function(id) { items.push({ dispose: function() { clearTimeout(id); clearInterval(id); } }); return id; };
+    this.registerListener = function(target, type, listener, opts) {
+      target.addEventListener(type, listener, opts);
+      items.push({ dispose: function() { target.removeEventListener(type, listener, opts); } });
+      return listener;
+    };
+    this.disposeAll = function() {
+      for (var i = items.length - 1; i >= 0; i--) {
+        try {
+          var r = items[i];
+          if (r && typeof r.dispose === 'function') r.dispose();
+          else if (r && typeof r.unsubscribe === 'function') r.unsubscribe();
+          else if (r && typeof r.disconnect === 'function') r.disconnect();
+          else if (r && typeof r.close === 'function') r.close();
+        } catch(e) {}
+      }
+      items = [];
+    };
+    this.size = function() { return items.length; };
+  }
+
+  function IncrementalRenderer(container) {
+    var prevSig = null;
+    var prevStatus = null;
+    var rafId = null;
+
+    this.update = function(sig, statusMap, fullRender) {
+      if (sig !== prevSig) {
+        fullRender();
+        prevSig = sig;
+        prevStatus = statusMap;
+        return;
+      }
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(function() {
+        rafId = null;
+        for (var sid in statusMap) {
+          if (statusMap[sid].state === (prevStatus[sid] && prevStatus[sid].state)) continue;
+          var row = container.querySelector('[data-open="' + sid + '"]');
+          if (!row) continue;
+          var info = statusMap[sid];
+          row.classList.toggle('rmx-running', info.running);
+          var dot = row.querySelector('.rmx-dot');
+          if (dot) dot.style.cssText = info.running ? 'background:#2fbf71;box-shadow:0 0 6px rgba(47,191,113,.7)' : '';
+          var badge = row.querySelector('.rmx-task-badge');
+          if (badge) {
+            badge.className = 'rmx-task-badge ' + (info.running ? 'rmx-badge-run' : (info.blank ? 'rmx-badge-blank' : 'rmx-badge-done'));
+            badge.textContent = info.running ? '进行中' : (info.blank ? '新会话' : '已完成');
+          }
+        }
+        prevStatus = statusMap;
+      });
+    };
+    this.reset = function() { prevSig = null; prevStatus = null; };
+    this.dispose = function() { if (rafId) cancelAnimationFrame(rafId); rafId = null; };
+  }
+
+  function VirtualList(container, opts) {
+    var itemHeight = opts.itemHeight || 60;
+    var bufferSize = opts.bufferSize || 10;
+    var items = [];
+    var scrollRaf = null;
+    var lastStart = -1, lastEnd = -1;
+
+    var topSpacer = document.createElement('div');
+    var content = document.createElement('div');
+    var bottomSpacer = document.createElement('div');
+    topSpacer.style.height = '0px';
+    bottomSpacer.style.height = '0px';
+    container.appendChild(topSpacer);
+    container.appendChild(content);
+    container.appendChild(bottomSpacer);
+
+    function renderVisible() {
+      var scrollTop = container.scrollTop;
+      var visibleStart = Math.floor(scrollTop / itemHeight);
+      var visibleCount = Math.ceil(container.clientHeight / itemHeight);
+      var startIdx = Math.max(0, visibleStart - bufferSize);
+      var endIdx = Math.min(items.length, visibleStart + visibleCount + bufferSize);
+      if (startIdx === lastStart && endIdx === lastEnd) return;
+      lastStart = startIdx; lastEnd = endIdx;
+
+      topSpacer.style.height = (startIdx * itemHeight) + 'px';
+      bottomSpacer.style.height = Math.max(0, (items.length - endIdx) * itemHeight) + 'px';
+
+      var html = '';
+      for (var i = startIdx; i < endIdx; i++) html += opts.renderItem(items[i], i);
+      content.innerHTML = html;
+    }
+
+    var scrollListener = function() {
+      if (scrollRaf) return;
+      scrollRaf = requestAnimationFrame(function() { scrollRaf = null; renderVisible(); });
+    };
+    container.addEventListener('scroll', scrollListener, { passive: true });
+
+    this.setItems = function(newItems) {
+      items = newItems;
+      lastStart = -1; lastEnd = -1;
+      renderVisible();
+    };
+    this.scrollTo = function(index) {
+      container.scrollTop = index * itemHeight;
+    };
+    this.dispose = function() {
+      if (scrollRaf) cancelAnimationFrame(scrollRaf);
+      container.removeEventListener('scroll', scrollListener);
+    };
+  }
+
+  /* ==================================================================
    * 1) 设置页远程控制
    * ================================================================== */
   function RemoteControlSection() {
@@ -133,15 +249,20 @@ function factoryBody(require2) {
     var collapsed = {};
     var flatMode = false;
     var isMobile = function() { return window.innerWidth < 768; };
-    // Lifecycle cleanup state
-    var unsubSessions = null, unsubWorkspaces = null, resizeHandler = null, themeObserver = null;
+    var disposables = new DisposableRegistry();
+    var resizeHandler = null;
+    var incremental = null;
+    var virtualList = null;
+    var unsubSessions = null, unsubWorkspaces = null;
     var cleanup = function() {
-      if (unsubSessions) { unsubSessions(); unsubSessions = null; }
-      if (unsubWorkspaces) { unsubWorkspaces(); unsubWorkspaces = null; }
+      disposables.disposeAll();
+      if (incremental) { incremental.dispose(); incremental = null; }
+      if (virtualList) { virtualList.dispose(); virtualList = null; }
+      unsubSessions = null; unsubWorkspaces = null;
       // 注意：不能在这里注销 resize 监听。它是「桌面↔移动」切换的唯一入口，
       // 一旦注销，之后再切到移动端就再也不会重建仪表盘/返回条（表现为空白，只能刷新恢复）。
-      if (themeObserver) { themeObserver.disconnect(); themeObserver = null; }
     };
+    function trackSub(unsub) { disposables.register({ dispose: unsub }); return unsub; }
 
     /* ---- SVG 图标 ---- */
     var ICON = {
@@ -180,7 +301,7 @@ function factoryBody(require2) {
       }
     }
     // 监听 DSH 主题属性变化
-    themeObserver = new MutationObserver(function() { syncTheme(); });
+    var themeObserver = disposables.register(new MutationObserver(function() { syncTheme(); }));
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-ds-dark-theme', 'data-ds-light-theme'] });
 
     /* ---- 长按菜单 ---- */
@@ -195,8 +316,8 @@ function factoryBody(require2) {
       menuEl.className = 'rmx-menu';
       menuEl.style.left = Math.min(x, window.innerWidth - 160) + 'px';
       menuEl.style.top = Math.min(y, window.innerHeight - 100) + 'px';
-      menuEl.innerHTML = '<button class="rmx-menu-item" data-action="open">' + ICON.book + ' 打开会话</button>'
-        + '<button class="rmx-menu-item danger" data-action="delete">' + ICON.trash + ' 删除会话</button>';
+      menuEl.innerHTML = '<button class="rmx-menu-item" data-action="open" aria-label="打开会话">' + ICON.book + ' 打开会话</button>'
+        + '<button class="rmx-menu-item danger" data-action="delete" aria-label="归档会话">' + ICON.trash + ' 归档会话</button>';
       document.body.appendChild(menuEl);
 
       menuEl.querySelector('[data-action="open"]').addEventListener('click', function() { hideMenu(); enterSession(); sessions.open(sid); });
@@ -437,7 +558,8 @@ function factoryBody(require2) {
         html += '<div class="rmx-ws-icon">' + ICON.folder + '</div>';
         html += '<div class="rmx-ws-main"><div class="rmx-ws-name-row"><span class="rmx-ws-name">' + esc(wsTitle(ws)) + '</span><span class="rmx-ws-badge">本地</span></div>';
         html += '<div class="rmx-ws-path">' + esc(wsPath(ws)) + '</div>';
-        html += '<div class="rmx-ws-meta">更新于 ' + esc(relTime(sessionTime(ws))) + '</div></div>';
+        var wsLatestTime = 0; for (var wi2 = 0; wi2 < tasks.length; wi2++) { var wt = sessionTime(tasks[wi2]); if (wt > wsLatestTime) wsLatestTime = wt; }
+        html += '<div class="rmx-ws-meta">更新于 ' + esc(relTime(wsLatestTime)) + '</div></div>';
         html += '<span class="rmx-ws-count">' + tasks.length + ' 个任务</span>';
         html += '<button class="rmx-ws-chevron" data-collapse="' + esc(wsK) + '" style="' + (isCol ? 'transform:rotate(-90deg)' : '') + '">' + ICON.chevDown + '</button>';
         html += '<button class="rmx-ws-add" data-add="' + esc(wsK) + '" title="新建任务">' + ICON.plus + '</button></div>';
@@ -473,20 +595,51 @@ function factoryBody(require2) {
       if (flatMode) {
         var flatSessions = Object.values(byId).filter(function(s) { return isVisible(s); });
         flatSessions.sort(function(a, b) { return (sessionTime(b) || 0) - (sessionTime(a) || 0); });
-        html = '';
         if (flatSessions.length === 0) {
-          html = emptyHtml(loading);
+          if (virtualList) { virtualList.dispose(); virtualList = null; }
+          if (incremental) incremental.reset();
+          body.innerHTML = emptyHtml(loading);
+        } else if (flatSessions.length > 100) {
+          if (incremental) { incremental.reset(); }
+          if (!virtualList) {
+            body.innerHTML = '';
+            virtualList = new VirtualList(body, { itemHeight: 60, bufferSize: 10, renderItem: function(s) { return taskRow(s); } });
+          }
+          virtualList.setItems(flatSessions);
         } else {
-          html += '<div class="rmx-tasks" style="border-top:none">';
-          for (var fi = 0; fi < flatSessions.length; fi++) html += taskRow(flatSessions[fi]);
-          html += '</div>';
+          if (virtualList) { virtualList.dispose(); virtualList = null; }
+          var flatHtml = '<div class="rmx-tasks" style="border-top:none">';
+          for (var fi = 0; fi < flatSessions.length; fi++) flatHtml += taskRow(flatSessions[fi]);
+          flatHtml += '</div>';
+          var flatSig = 'flat:' + flatSessions.map(function(s) { return s.id; }).join(',');
+          var flatStatus = {};
+          for (var fs = 0; fs < flatSessions.length; fs++) {
+            var s2 = flatSessions[fs];
+            flatStatus[s2.id] = { running: isRunning(s2), blank: isBlank(s2), state: isRunning(s2) ? 'run' : (isBlank(s2) ? 'blank' : 'done') };
+          }
+          if (!incremental) incremental = new IncrementalRenderer(body);
+          incremental.update(flatSig, flatStatus, function() { body.innerHTML = flatHtml; });
         }
-      } else if (totalVisible === 0) {
-        // 分组模式下原本什么都不渲染（空白）。数据未就绪时显示加载态，避免「慢」被误看成白屏。
-        html = emptyHtml(loading);
+      } else {
+        if (virtualList) { virtualList.dispose(); virtualList = null; }
+        if (totalVisible === 0) { html = emptyHtml(loading); }
+        var sigParts = ['group'];
+        var statusMap = {};
+        for (var wsI = 0; wsI < wsItems.length; wsI++) {
+          var wsKs = wsKey(wsItems[wsI]);
+          sigParts.push(wsKs + ':' + (collapsed[wsKs] ? '1' : '0'));
+        }
+        sigParts.push('ungrouped:' + (collapsed['__ungrouped__'] ? '1' : '0'));
+        var allSess = Object.values(byId);
+        for (var as = 0; as < allSess.length; as++) {
+          var ss2 = allSess[as];
+          if (!isVisible(ss2)) continue;
+          sigParts.push(ss2.id);
+          statusMap[ss2.id] = { running: isRunning(ss2), blank: isBlank(ss2), state: isRunning(ss2) ? 'run' : (isBlank(ss2) ? 'blank' : 'done') };
+        }
+        if (!incremental) incremental = new IncrementalRenderer(body);
+        incremental.update(sigParts.join('|'), statusMap, function() { body.innerHTML = html; });
       }
-
-      body.innerHTML = html;
     }
 
     function debugLog() {}
@@ -538,8 +691,8 @@ function factoryBody(require2) {
         }
       } catch(e) {}
       // Re-subscribe after cleanup for dashboard view
-      unsubSessions = sessions.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); });
-      unsubWorkspaces = workspaces.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); });
+      unsubSessions = trackSub(sessions.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
+      unsubWorkspaces = trackSub(workspaces.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
       render();
     }
 
@@ -563,8 +716,8 @@ function factoryBody(require2) {
           if (isMobile() && !dashEl) {
             buildSkeleton();
             // Re-subscribe after desktop cleanup
-            if (!unsubSessions) unsubSessions = sessions.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); });
-            if (!unsubWorkspaces) unsubWorkspaces = workspaces.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); });
+            if (!unsubSessions) unsubSessions = trackSub(sessions.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
+            if (!unsubWorkspaces) unsubWorkspaces = trackSub(workspaces.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
             tryRender();
           }
           else if (!isMobile() && dashEl) {
@@ -584,8 +737,8 @@ function factoryBody(require2) {
       buildSkeleton();
 
       // Subscribe FIRST so we catch data arriving — use scheduleRender for batching
-      unsubSessions = sessions.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); });
-      unsubWorkspaces = workspaces.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); });
+      unsubSessions = trackSub(sessions.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
+      unsubWorkspaces = trackSub(workspaces.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
 
       tryRender();
 

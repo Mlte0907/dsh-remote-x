@@ -25,8 +25,16 @@ fi
 AUTH=(-H "x-remote-token: $TOKEN")
 JSON=(-H 'content-type: application/json')
 pass=0; fail=0
+SID=""
 ok()  { echo "PASS  $1"; pass=$((pass+1)); }
 bad() { echo "FAIL  $1   —— $2"; fail=$((fail+1)); }
+
+cleanup_test() {
+  if [ -n "$SID" ]; then
+    curl -s -X DELETE "${AUTH[@]}" "$BASE/api/tasks/$SID" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_test EXIT INT TERM
 
 echo "== dsh-remote-x API 实机实测（$BASE）=="
 echo
@@ -85,4 +93,6 @@ if printf '%s' "$tasks2" | grep -q '实机测试任务'; then ok "10 列表标�
 
 echo
 echo "== 结果：$pass 通过 / $fail 失败 =="
+cleanup_test
+SID=""
 [ "$fail" -eq 0 ] || exit 1

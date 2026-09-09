@@ -44,6 +44,24 @@ export interface Config {
   token?: string
   /** Proxy access-key for QR entry URL. When set, QR links use ?key= instead of ?token=. */
   accessKey?: string
+  /** Cloudflare tunnel region: 'auto' | 'ap' | 'us' | 'eu'. Default 'auto'. */
+  tunnelRegion?: string
+  /** Cloudflare tunnel protocol: 'quic' | 'http2'. Default 'quic'. */
+  tunnelProtocol?: string
+  /** Enable tunnel auto-reconnect on crash. Default true. */
+  tunnelReconnect?: boolean
+  /** Metrics port for cloudflared --metrics (0 = disabled). Default 0. */
+  tunnelMetricsPort?: number
+  /** Health check interval in ms. Default 30000. */
+  tunnelHealthCheckMs?: number
+  /** Max reconnection attempts before giving up. Default 10. */
+  tunnelMaxReconnect?: number
+  /** Enable upstream keep-alive connection pooling. Default true. */
+  proxyKeepAlive?: boolean
+  /** Enable response compression passthrough. Default true. */
+  proxyCompress?: boolean
+  /** Enable debug logging. Default false. */
+  debug?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -54,6 +72,15 @@ export const Config: z<Config> = z.object({
   accessKey: z.string(),
   cloudflareToken: z.string(),
   publicDomain: z.string(),
+  tunnelRegion: z.string().default('auto'),
+  tunnelProtocol: z.string().default('quic'),
+  tunnelReconnect: z.boolean().default(true),
+  tunnelMetricsPort: z.number().default(0),
+  tunnelHealthCheckMs: z.number().default(30_000),
+  tunnelMaxReconnect: z.number().default(10),
+  proxyKeepAlive: z.boolean().default(true),
+  proxyCompress: z.boolean().default(true),
+  debug: z.boolean().default(false),
 })
 
 /* ------------------------------------------------------------------ */
@@ -360,8 +387,14 @@ function lanAddresses(): string[] {
   return [...new Set(out)]
 }
 
+/** LRU cache for QR SVG rendering (max 64 entries). */
+const qrCache = new Map<string, string>()
+const QR_CACHE_MAX = 64
+
 /** Self-rendered QR SVG — only uses qrcode's core matrix module (no pngjs). */
 async function renderQrSvg(text: string): Promise<string> {
+  const cached = qrCache.get(text)
+  if (cached !== undefined) return cached
   const core: any = await import('qrcode/lib/core/qrcode.js')
   const create = core?.create ?? core?.default?.create
   const qr = create(text, { errorCorrectionLevel: 'M' })
@@ -375,9 +408,15 @@ async function renderQrSvg(text: string): Promise<string> {
       if (data[row * size + col] === 1) parts.push(`M${col + quiet} ${row + quiet}h1v1h-1z`)
     }
   }
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges">`
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges">`
     + `<rect width="${total}" height="${total}" fill="#ffffff"/>`
     + `<path d="${parts.join('')}" fill="#000000"/></svg>`
+  if (qrCache.size >= QR_CACHE_MAX) {
+    const firstKey = qrCache.keys().next().value
+    if (firstKey !== undefined) qrCache.delete(firstKey)
+  }
+  qrCache.set(text, svg)
+  return svg
 }
 
 /* ------------------------------------------------------------------ */
@@ -385,7 +424,7 @@ async function renderQrSvg(text: string): Promise<string> {
 /* ------------------------------------------------------------------ */
 
 /* 公网隧道状态（运行时、进程内；不跨重启持久化） */
-let publicTunnel: { url: string; stop: () => void } | null = null
+let publicTunnel: { url: string; stop: () => void; runtime?: { region?: string; protocol?: string; reconnectCount?: number; latencyMs?: () => number | null; status?: string } } | null = null
 
 export async function apply(ctx: Context, config?: Config): Promise<void> {
   const breakpoint = typeof config?.breakpoint === 'number' && config.breakpoint > 0
@@ -459,6 +498,11 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
           })(),
           publicEnabled: publicTunnel !== null,
           publicUrl: publicTunnel?.url ?? null,
+          tunnelRegion: publicTunnel?.runtime?.region ?? null,
+          tunnelProtocol: publicTunnel?.runtime?.protocol ?? null,
+          tunnelReconnectCount: publicTunnel?.runtime?.reconnectCount ?? 0,
+          tunnelLatencyMs: typeof publicTunnel?.runtime?.latencyMs === 'function' ? (publicTunnel.runtime.latencyMs() ?? null) : null,
+          tunnelStatus: publicTunnel?.runtime?.status ?? 'disabled',
           cloudflaredAvailable: (() => {
             try { execFileSync('cloudflared', ['--version'], { stdio: 'ignore' }); return true }
             catch { return false }
@@ -532,13 +576,18 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
               if (!proxyActive) execFileSync('systemctl', ['--user', 'start', 'dsh-remote-proxy.service'], { stdio: 'ignore' })
               const accessKey = config?.accessKey
               const token = await resolveTokenLazy(ctx, config)
-              const t = await startTunnel(proxyPort, { token: config?.cloudflareToken, domain: config?.publicDomain })
+              const t = await startTunnel(proxyPort, {
+                token: config?.cloudflareToken, domain: config?.publicDomain,
+                region: config?.tunnelRegion, protocol: config?.tunnelProtocol,
+                metricsPort: config?.tunnelMetricsPort, reconnect: config?.tunnelReconnect,
+                healthCheckMs: config?.tunnelHealthCheckMs, maxReconnect: config?.tunnelMaxReconnect,
+              })
               const suffix = accessKey
                 ? `/k/${encodeURIComponent(accessKey)}/`
                 : token !== undefined
                   ? `/t/${encodeURIComponent(token)}/`
                   : '/'
-              publicTunnel = { url: t.url + suffix, stop: t.stop }
+              publicTunnel = { url: t.url + suffix, stop: t.stop, runtime: t.runtime }
             }
             sendJson(res, 200, { ok: true, enabled: true, url: publicTunnel.url })
           } else {
