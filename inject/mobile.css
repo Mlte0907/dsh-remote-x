@@ -204,6 +204,18 @@
     top: calc(env(safe-area-inset-top, 0px) + 49px) !important;
   }
 
+  /* 2026-09-10：全屏侧栏抽屉打开时整体让位——隐藏返回条 + 取消 49px 顶距，
+     让抽屉真正铺满屏幕（抽屉自带「退出侧栏全屏 / 收起侧栏」控制，不会没有出口）。
+     用 :has() 直接跟随面板的 data-sidebar-right-open 属性，纯 CSS、无需 JS 观察器；
+     选择器比上一条多一个伪类 → 特异性更高，能盖过上面的 top:49px。 */
+  body.rm-x-mobile.rm-x-in-session:has([data-sidebar-right-panel][data-sidebar-right-open]) #rm-x-backbar {
+    display: none !important;
+  }
+
+  body.rm-x-mobile.rm-x-in-session:has([data-sidebar-right-panel][data-sidebar-right-open]) [class*="_panel"]:not([class*="_panelSheet"]):not([class*="_panelWindow"]) {
+    top: env(safe-area-inset-top, 0px) !important;
+  }
+
   /* iOS 底部安全区 */
   body.rm-x-mobile.rm-x-in-session [class*="_composer"],
   body.rm-x-mobile.rm-x-in-session [class*="_inputBar"],
