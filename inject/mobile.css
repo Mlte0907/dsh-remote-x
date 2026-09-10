@@ -192,10 +192,13 @@
     margin-left: 0 !important;
     margin-top: 0 !important;
   }
-  /* 呼出的侧栏面板：展开「与」收起都必须顶在返回条下方。
+  /* 呼出的「右侧栏」面板：展开与收起都必须顶在返回条下方。
      若只在非 _panelHidden 时生效，收起滑出的一瞬 top 会回 0，
-     面板整块盖住返回栏再滑走（即"收起时尺寸恢复成覆盖返回栏"）。 */
-  body.rm-x-mobile.rm-x-in-session [class*="_panel"] {
+     面板整块盖住返回栏再滑走（即"收起时尺寸恢复成覆盖返回栏"）。
+     ⚠️ 必须排除别的插件里同样含 "_panel" 的类（如 teams-x 的
+     ccAtPW_panelSheet / panelWindow）——否则会把它们的 fixed 定位
+     强设为 top，破坏其底部弹层（2026-09-10 实测：teams-x 手机面板被顶到 top:49）。 */
+  body.rm-x-mobile.rm-x-in-session [class*="_panel"]:not([class*="_panelSheet"]):not([class*="_panelWindow"]) {
     top: calc(env(safe-area-inset-top, 0px) + 49px) !important;
   }
 
