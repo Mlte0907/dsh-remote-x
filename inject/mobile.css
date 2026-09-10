@@ -127,10 +127,12 @@
     overflow: hidden !important;
   }
   /* dsh 0.1.5 列名：sidebarCol / centerCol / rightbarCol / overlayLayer；
-     旧名 detailsCol / handle 保留兼容更早版本。 */
+     旧名 detailsCol / handle 保留兼容更早版本。
+     注意：_rightbarCol（右侧栏）不在此列——0.1.5 起它承载官方侧栏面板
+     （better-sidebar 的 tab 也注册于此），窄屏下由 DSH 做成全宽抽屉，
+     隐藏它会让会话头的「展开侧栏」按钮点了没有反应。 */
   body.rm-x-mobile.rm-x-in-session [class*="_sidebarCol"],
   body.rm-x-mobile.rm-x-in-session [class*="_detailsCol"],
-  body.rm-x-mobile.rm-x-in-session [class*="_rightbarCol"],
   body.rm-x-mobile.rm-x-in-session [class*="_handle"],
   body.rm-x-mobile.rm-x-in-session [class*="_widthHandle"] {
     display: none !important;

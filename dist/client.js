@@ -499,20 +499,14 @@ function factoryBody(require2) {
         dashEl.addEventListener('touchcancel', cancel, { passive: true });
       }, { passive: true });
       backEl.querySelector('.rmx-backbtn').addEventListener('click', function() { exitToDashboard(); });
-      // 原生「右侧栏」开关（会话头部 _headerCorner 里的按钮）在手机上点了无效——
-      // remote-x 把 _rightbarCol 隐藏了，DSH 只切内部状态、界面无变化。
-      // 捕获阶段把它的点击转发给返回栏里那个能打开右侧插件面板的开关，使之可用。
-      document.addEventListener('click', function(e) {
-        if (!isMobile() || !document.body.classList.contains('rm-x-in-session')) return;
-        var el = e.target;
-        if (!el || typeof el.closest !== 'function') return;
-        var btn = el.closest('button');
-        if (!btn || !btn.closest('[class*="_headerCorner"]')) return;
-        e.preventDefault();
-        e.stopPropagation();
-        var bar = document.querySelector('[class*="_toggleCluster"] button');
-        if (bar) bar.click();
-      }, true);
+      // (2026-09-10 移除) 这里曾用捕获阶段截获会话头内按钮的点击、转发给 _toggleCluster
+      // （当时 remote-x 把 _rightbarCol 隐藏了，原生开关看起来失效）。dsh 0.1.5 起三点都变了：
+      //   ① _toggleCluster 已被移除 —— 转发目标为空，点击被阻断后什么也不会发生，
+      //      等于把开关彻底按死；
+      //   ② 右侧栏开关迁到会话头 corner 槽的 ExpandButton（aria-label「展开侧栏」），
+      //      它原生就能用（桌面 1440 实测：rightbarCol 0→648px，按钮变占位符）；
+      //   ③ 窄屏下右侧栏本身就是全宽抽屉（panel 带 data-sidebar-right-panel="fullscreen"）。
+      // 所以改为不再隐藏 _rightbarCol（见 showFrame 与 mobile.css），让原生开关直接生效。
     }
 
     function getDataReady() {
@@ -666,7 +660,10 @@ function factoryBody(require2) {
       var f = pickEl(SEL_FRAME);
       if (!f) { debugLog('showFrame: frame not found'); return; }
       f.style.cssText = 'display:flex!important;flex-direction:column!important;height:100dvh!important;overflow:hidden!important';
-      var selectors = [SEL_SIDEBAR, SEL_DETAILS, SEL_HANDLE, SEL_OVERLAY];
+      // SEL_DETAILS（右侧栏）不再隐藏：0.1.5 起它承载官方侧栏面板（better-sidebar 的
+      // 文件/终端/Git 等 tab 也注册在这里），窄屏下 DSH 自己把它做成全宽抽屉、折叠时
+      // 宽度为 0 不占地方。强制隐藏会让会话头的「展开侧栏」按钮点了没有任何反应。
+      var selectors = [SEL_SIDEBAR, SEL_HANDLE, SEL_OVERLAY];
       selectors.forEach(function(sels) { var e = findIn(f, sels); if (e) e.style.display = 'none'; });
       var c = findIn(f, SEL_CENTER);
       if (c) c.style.cssText = 'flex:1!important;min-width:0!important;overflow:hidden!important;padding-top:calc(44px+env(safe-area-inset-top,0px))!important';
