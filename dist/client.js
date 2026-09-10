@@ -499,6 +499,20 @@ function factoryBody(require2) {
         dashEl.addEventListener('touchcancel', cancel, { passive: true });
       }, { passive: true });
       backEl.querySelector('.rmx-backbtn').addEventListener('click', function() { exitToDashboard(); });
+      // 原生「右侧栏」开关（会话头部 _headerCorner 里的按钮）在手机上点了无效——
+      // remote-x 把 _rightbarCol 隐藏了，DSH 只切内部状态、界面无变化。
+      // 捕获阶段把它的点击转发给返回栏里那个能打开右侧插件面板的开关，使之可用。
+      document.addEventListener('click', function(e) {
+        if (!isMobile() || !document.body.classList.contains('rm-x-in-session')) return;
+        var el = e.target;
+        if (!el || typeof el.closest !== 'function') return;
+        var btn = el.closest('button');
+        if (!btn || !btn.closest('[class*="_headerCorner"]')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        var bar = document.querySelector('[class*="_toggleCluster"] button');
+        if (bar) bar.click();
+      }, true);
     }
 
     function getDataReady() {

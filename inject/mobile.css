@@ -148,15 +148,54 @@
     position: relative !important;
     padding-top: 48px !important;
   }
-  /* 侧栏切换按钮（dsh-better-sidebar）：上移到返回条行内（右侧），不再悬在下方 */
+  /* 原生侧栏切换按钮：移到返回条行内右侧，并在返回条内竖向居中。
+     返回条高 41px、按钮 28px → 顶距 6px（含 iOS 安全区）。 */
   body.rm-x-mobile.rm-x-in-session [class*="_toggleCluster"] {
-    top: calc(env(safe-area-inset-top, 0px) + 10px) !important;
+    top: calc(env(safe-area-inset-top, 0px) + 6px) !important;
   }
   body[data-dsh-sidebar-collapsed] [class*="_toggleCluster"] {
     top: calc(56px + env(safe-area-inset-top)) !important;
   }
-  /* 呼出的侧栏面板：顶到返回条下方展开，不再遮挡返回条 */
-  body.rm-x-mobile.rm-x-in-session [class*="_panel"]:not([class*="_panelHidden"]) {
+  /* 会话头部「展开侧栏」按钮：默认会另起一行、贴左孤立 → 改为与标题同行、靠右。 */
+  body.rm-x-mobile.rm-x-in-session [class*="_titleRow"] {
+    display: flex !important;
+    align-items: flex-start !important;
+    gap: 8px !important;
+  }
+  body.rm-x-mobile.rm-x-in-session [class*="_titleCluster"] {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    /* 标题独占一行；「2 个子代理」与「自主模式」并为下一行 */
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    column-gap: 8px !important;
+    row-gap: 2px !important;
+  }
+  /* 拆掉面包屑的中间包裹层，让「标题 / 2个子代理 / 自主模式」成为同一 flex 行 */
+  body.rm-x-mobile.rm-x-in-session [class*="_titleCluster"] [class*="_crumbs"],
+  body.rm-x-mobile.rm-x-in-session [class*="_titleCluster"] [class*="_crumbSeg"] {
+    display: contents !important;
+  }
+  body.rm-x-mobile.rm-x-in-session [class*="_titleCluster"] [class*="_crumbCurrent"] {
+    flex: 1 1 100% !important;
+    min-width: 0 !important;
+    justify-content: flex-start !important;
+    text-align: left !important;
+  }
+  body.rm-x-mobile.rm-x-in-session [class*="_titleCluster"] [class*="_headerActions"] {
+    flex: 0 0 auto !important;
+  }
+  body.rm-x-mobile.rm-x-in-session [class*="_headerCorner"] {
+    flex: 0 0 auto !important;
+    width: auto !important;
+    margin-left: 0 !important;
+    margin-top: 0 !important;
+  }
+  /* 呼出的侧栏面板：展开「与」收起都必须顶在返回条下方。
+     若只在非 _panelHidden 时生效，收起滑出的一瞬 top 会回 0，
+     面板整块盖住返回栏再滑走（即"收起时尺寸恢复成覆盖返回栏"）。 */
+  body.rm-x-mobile.rm-x-in-session [class*="_panel"] {
     top: calc(env(safe-area-inset-top, 0px) + 49px) !important;
   }
 
