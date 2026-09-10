@@ -216,6 +216,30 @@
     min-width: 40px !important;
     min-height: 40px !important;
   }
+
+  /* DSH 底部「模型 / 推理等级」弹出层：长模型名把行撑到比弹层还宽
+     （实测 360px 下 option 393px > menu 336px），溢出部分被屏幕边缘裁掉、
+     且没有省略号。约束行/副本宽度，让名称按可用宽度省略号收尾。 */
+  body.rm-x-mobile [class*="_group"],
+  body.rm-x-mobile [class*="_option"]:not([class*="_optionCopy"]),
+  body.rm-x-mobile [class*="_optionCopy"] {
+    max-width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }
+  body.rm-x-mobile [class*="_option"]:not([class*="_optionCopy"]) {
+    width: 100% !important;
+  }
+  body.rm-x-mobile [class*="_optionCopy"] {
+    flex: 1 1 0 !important;
+  }
+  body.rm-x-mobile [class*="_modelName"] {
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+  }
 }
 
 /* ---------- 仪表盘组件样式（复用 rmx-* 命名空间） ---------- */
