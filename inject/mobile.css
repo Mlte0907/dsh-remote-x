@@ -126,9 +126,13 @@
     min-height: 0 !important;
     overflow: hidden !important;
   }
+  /* dsh 0.1.5 列名：sidebarCol / centerCol / rightbarCol / overlayLayer；
+     旧名 detailsCol / handle 保留兼容更早版本。 */
   body.rm-x-mobile.rm-x-in-session [class*="_sidebarCol"],
   body.rm-x-mobile.rm-x-in-session [class*="_detailsCol"],
-  body.rm-x-mobile.rm-x-in-session [class*="_handle"] {
+  body.rm-x-mobile.rm-x-in-session [class*="_rightbarCol"],
+  body.rm-x-mobile.rm-x-in-session [class*="_handle"],
+  body.rm-x-mobile.rm-x-in-session [class*="_widthHandle"] {
     display: none !important;
   }
   /* overlay 层不隐藏，推到返回条下方 */
@@ -164,8 +168,9 @@
     padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important;
   }
 
-  /* 触控目标下限 */
-  body.rm-x-mobile.rm-x-in-session [class*="_iconBtn"] {
+  /* 触控目标下限（dsh 0.1.5 类名 iconButton；旧 iconBtn 保留兼容） */
+  body.rm-x-mobile.rm-x-in-session [class*="_iconBtn"],
+  body.rm-x-mobile.rm-x-in-session [class*="_iconButton"] {
     min-width: 40px !important;
     min-height: 40px !important;
   }
@@ -188,6 +193,18 @@
   margin: 3px 0 0;
   font-size: 13px;
   opacity: .5;
+}
+
+/* 连接信息卡（对齐 ref/图4）*/
+.rmx-info-card {
+  margin: 0 18px 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--rmx-card-border, rgba(127, 127, 127, .16));
+  background: var(--rmx-card, rgba(127, 127, 127, .04));
+  font-size: 12.5px;
+  line-height: 1.55;
+  opacity: .8;
 }
 
 /* 区块头 */
@@ -352,6 +369,9 @@
 .rmx-task-time { font-size: 12px; opacity: .45; margin-top: 2px; }
 .rmx-task-badge {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 11.5px;
   padding: 3px 9px;
   border-radius: 999px;

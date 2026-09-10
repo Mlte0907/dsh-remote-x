@@ -275,6 +275,8 @@ function factoryBody(require2) {
       arrowLeft: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>',
       book: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
       trash: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+      check: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><polyline points="20 6 9 17 4 12"/></svg>',
+      play: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><polyline points="4 12 9 12"/><circle cx="12" cy="12" r="9" opacity=".35"/></svg>',
     };
 
     /* ---- 主题同步 ---- */
@@ -419,10 +421,10 @@ function factoryBody(require2) {
       var run = isRunning(s);
       var dotS = run ? ' background:#2fbf71;box-shadow:0 0 6px rgba(47,191,113,.7)' : '';
       var badge = run
-        ? '<span class="rmx-task-badge rmx-badge-run">进行中</span>'
+        ? '<span class="rmx-task-badge rmx-badge-run">' + ICON.play + '进行中</span>'
         : isBlank(s)
           ? '<span class="rmx-task-badge rmx-badge-blank">新会话</span>'
-          : '<span class="rmx-task-badge rmx-badge-done">已完成</span>';
+          : '<span class="rmx-task-badge rmx-badge-done">' + ICON.check + '已完成</span>';
       return '<button class="rmx-task' + (run ? ' rmx-running' : '') + '" data-open="' + esc(s.id) + '">'
         + '<span class="rmx-dot" style="' + dotS + '"></span>'
         + '<div class="rmx-task-main"><div class="rmx-task-title">' + esc(sessionTitle(s)) + '</div>'
@@ -430,15 +432,17 @@ function factoryBody(require2) {
     }
     var SEL_FRAME = ['[class*="_frame"]', '[class*="frame"]', '[class*="Frame"]', '#root > div'];
     var SEL_SIDEBAR = ['[class*="_sidebarCol"]', '[class*="sidebar"]', '[class*="Sidebar"]'];
-    var SEL_DETAILS = ['[class*="_detailsCol"]', '[class*="details"]', '[class*="Details"]'];
+    // dsh 0.1.5 右侧栏改名 rightbarCol（旧 detailsCol 保留兼容）
+    var SEL_DETAILS = ['[class*="_rightbarCol"]', '[class*="_detailsCol"]', '[class*="rightbar"]', '[class*="details"]', '[class*="Details"]'];
     var SEL_CENTER = ['[class*="_centerCol"]', '[class*="center"]', '[class*="Center"]'];
-    var SEL_HANDLE = ['[class*="_handle"]', '[class*="handle"]'];
+    // dsh 0.1.5 拖拽把手改名 widthHandle（旧 handle 保留兼容）
+    var SEL_HANDLE = ['[class*="_widthHandle"]', '[class*="_handle"]', '[class*="widthHandle"]', '[class*="handle"]'];
     var SEL_OVERLAY = ['[class*="_overlayLayer"]', '[class*="overlay"]'];
 
     function buildSkeleton() {
       dashEl = document.createElement('div');
       dashEl.id = 'rm-x-dashboard';
-      dashEl.innerHTML = '<div class="rmx-header"><h1 class="rmx-title">远程控制</h1><p class="rmx-subtitle">手机与电脑需在同一局域网内</p></div><div class="rmx-section-head"><h2 class="rmx-section-title">当前设备上的工作区和任务</h2><span class="rmx-section-tools"><button class="rmx-tool-btn rmx-view-toggle" title="切换视图">' + ICON.viewList + '</button><button class="rmx-tool-btn rmx-collapse-all" title="展开/折叠全部">' + ICON.collapse + '</button><button class="rmx-tool-btn rmx-refresh" title="刷新">' + ICON.refresh + '</button></span></div><div class="rmx-counts"></div><div class="rmx-body" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:calc(env(safe-area-inset-bottom,0px)+24px)"></div>';
+      dashEl.innerHTML = '<div class="rmx-header"><h1 class="rmx-title">远程控制</h1><p class="rmx-subtitle">手机与电脑需在同一局域网内</p></div><div class="rmx-info-card">本次连接可查看当前设备上已打开的项目、任务和会话。</div><div class="rmx-section-head"><h2 class="rmx-section-title">当前设备上的工作区和任务</h2><span class="rmx-section-tools"><button class="rmx-tool-btn rmx-view-toggle" title="切换视图">' + ICON.viewList + '</button><button class="rmx-tool-btn rmx-collapse-all" title="展开/折叠全部">' + ICON.collapse + '</button><button class="rmx-tool-btn rmx-refresh" title="刷新">' + ICON.refresh + '</button></span></div><div class="rmx-counts"></div><div class="rmx-body" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:calc(env(safe-area-inset-bottom,0px)+24px)"></div>';
       document.body.appendChild(dashEl);
 
       backEl = document.createElement('div');
