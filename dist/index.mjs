@@ -1,5 +1,6 @@
 // src/index.ts
 import { open, readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir as homedir2, networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -478,7 +479,9 @@ try{
 }catch(e){}
 })();`;
     ctx.on("webserver/index-inject", ((table) => {
-      table.push({ kind: "style", text: css });
+      let fresh = css;
+      try { fresh = readFileSync(cssPath, "utf8").replace(/__BREAKPOINT__/g, String(breakpoint)); } catch { }
+      table.push({ kind: "style", text: fresh });
       table.push({ kind: "script", placement: "body", text: mobileJs });
       table.push({ kind: "global", name: "__REMOTE_X_NONCE__", value: issueNonce() });
     }));

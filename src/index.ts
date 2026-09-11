@@ -14,6 +14,7 @@
  */
 
 import { open, readFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -448,7 +449,11 @@ var rt;addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(setM,
 setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!document.getElementById('rm-x-dashboard'))document.body.classList.remove('rm-x-mobile')},5000);
 })();`
     ctx.on('webserver/index-inject', ((table: Array<Record<string, unknown>>) => {
-      table.push({ kind: 'style', text: css })
+      // 每次请求重读 mobile.css：调 CSS 后刷新页面即生效，无需重启宿主；
+      // 读失败（文件被删/占用）时沿用启动快照，保证注入不断供。
+      let fresh = css
+      try { fresh = readFileSync(cssPath, 'utf8').replace(/__BREAKPOINT__/g, String(breakpoint)) } catch { /* 沿用快照 */ }
+      table.push({ kind: 'style', text: fresh })
       table.push({ kind: 'script', placement: 'body', text: mobileJs })
       // 设置页标签（client 半）经同源 fetch 消费该 nonce 访问 qr-info
       table.push({ kind: 'global', name: '__REMOTE_X_NONCE__', value: issueNonce() })

@@ -150,14 +150,8 @@
     position: relative !important;
     padding-top: 48px !important;
   }
-  /* 原生侧栏切换按钮：移到返回条行内右侧，并在返回条内竖向居中。
-     返回条高 41px、按钮 28px → 顶距 6px（含 iOS 安全区）。 */
-  body.rm-x-mobile.rm-x-in-session [class*="_toggleCluster"] {
-    top: calc(env(safe-area-inset-top, 0px) + 6px) !important;
-  }
-  body[data-dsh-sidebar-collapsed] [class*="_toggleCluster"] {
-    top: calc(56px + env(safe-area-inset-top)) !important;
-  }
+  /* （2026-09-11 移除）原 _toggleCluster 顶距规则：rc.2 中该类名已不存在
+     （现用 data-sidebar-right-toggle 属性，位置跟随面板自身），属死代码。 */
   /* 会话头部「展开侧栏」按钮：默认会另起一行、贴左孤立 → 改为与标题同行、靠右。 */
   body.rm-x-mobile.rm-x-in-session [class*="_titleRow"] {
     display: flex !important;
@@ -194,27 +188,19 @@
     margin-left: 0 !important;
     margin-top: 0 !important;
   }
-  /* 呼出的「右侧栏」面板：展开与收起都必须顶在返回条下方。
-     若只在非 _panelHidden 时生效，收起滑出的一瞬 top 会回 0，
-     面板整块盖住返回栏再滑走（即"收起时尺寸恢复成覆盖返回栏"）。
-     ⚠️ 必须排除别的插件里同样含 "_panel" 的类（如 teams-x 的
-     ccAtPW_panelSheet / panelWindow）——否则会把它们的 fixed 定位
-     强设为 top，破坏其底部弹层（2026-09-10 实测：teams-x 手机面板被顶到 top:49）。 */
-  body.rm-x-mobile.rm-x-in-session [class*="_panel"]:not([class*="_panelSheet"]):not([class*="_panelWindow"]) {
+  /* 呼出的「右侧栏」抽屉：展开与收起都必须顶在返回条下方。
+     （2026-09-11 重写）原写法是 [class*="_panel"] 通配 + 排除 teams-x，
+     会误伤一切类名含 _panel 的浮层——设置模态的面板（xxx_panel）被强设
+     top 后整块塌成 0x0（浏览器实测复现），此为设置页在手机上打不开的根因。
+     rc.2 的抽屉面板自带 data-sidebar-right-panel 属性，改用属性精确命中，
+     不再需要任何排除列表。 */
+  body.rm-x-mobile.rm-x-in-session [data-sidebar-right-panel] {
     top: calc(env(safe-area-inset-top, 0px) + 49px) !important;
   }
 
-  /* 2026-09-10：全屏侧栏抽屉打开时整体让位——隐藏返回条 + 取消 49px 顶距，
-     让抽屉真正铺满屏幕（抽屉自带「退出侧栏全屏 / 收起侧栏」控制，不会没有出口）。
-     用 :has() 直接跟随面板的 data-sidebar-right-open 属性，纯 CSS、无需 JS 观察器；
-     选择器比上一条多一个伪类 → 特异性更高，能盖过上面的 top:49px。 */
-  body.rm-x-mobile.rm-x-in-session:has([data-sidebar-right-panel][data-sidebar-right-open]) #rm-x-backbar {
-    display: none !important;
-  }
-
-  body.rm-x-mobile.rm-x-in-session:has([data-sidebar-right-panel][data-sidebar-right-open]) [class*="_panel"]:not([class*="_panelSheet"]):not([class*="_panelWindow"]) {
-    top: env(safe-area-inset-top, 0px) !important;
-  }
+  /* （2026-09-11 移除）原「抽屉打开时全屏让位」规则：按用户要求，抽屉
+     打开/收起全程都不得盖住返回条——保持返回条可见，抽屉始终在 49px
+     顶距之下，不再隐藏返回条、不再回 top:0。 */
 
   /* iOS 底部安全区 */
   body.rm-x-mobile.rm-x-in-session [class*="_composer"],
