@@ -182,14 +182,16 @@ function factoryBody(require2) {
     var copy = function() { if (!shareUrl) return; try { navigator.clipboard.writeText(shareUrl); setCopied(true); setTimeout(function() { setCopied(false); }, 1500); } catch(e) {} };
     var copyPublic = function() { if (!publicUrl) return; try { navigator.clipboard.writeText(publicUrl); setCopied(true); setTimeout(function() { setCopied(false); }, 1500); } catch(e) {} };
 
-    var toggleLan = function() { if (busy) return; var next = !lanOn; setBusy(true); setLanOn(next);
+    var readErr = function(r) { return r.json().then(function(d) { return (d && d.error) ? d.error : ('HTTP ' + r.status); }).catch(function() { return 'HTTP ' + r.status; }); };
+    var toggleLan = function() { if (busy) return; var next = !lanOn; setBusy(true); setLanOn(next); setError(null);
       fetch('/dsh-remote-x/api/lan-toggle', { method: 'POST', headers: { 'content-type': 'application/json', 'x-remote-nonce': String(nonce()) }, body: JSON.stringify({ enabled: next }) })
-        .then(function(r) { if (!r.ok) throw new Error('fail'); }).catch(function() { setLanOn(!next); }).finally(function() { setBusy(false); }); };
-    var togglePublic = function() { if (publicBusy) return; var next = !publicOn; setPublicBusy(true); setPublicOn(next);
+        .then(function(r) { return r.ok ? r.json() : readErr(r).then(function(m) { throw new Error(m); }); })
+        .catch(function(err) { setLanOn(!next); setError(String(err.message || err)); }).finally(function() { setBusy(false); }); };
+    var togglePublic = function() { if (publicBusy) return; var next = !publicOn; setPublicBusy(true); setPublicOn(next); setError(null);
       fetch('/dsh-remote-x/api/public-toggle', { method: 'POST', headers: { 'content-type': 'application/json', 'x-remote-nonce': String(nonce()) }, body: JSON.stringify({ enabled: next }) })
-        .then(function(r) { return r.ok ? r.json() : Promise.reject(new Error('fail')); })
+        .then(function(r) { return r.ok ? r.json() : readErr(r).then(function(m) { throw new Error(m); }); })
         .then(function(d) { if (d.enabled) setPublicUrl(d.url || null); else setPublicUrl(null); })
-        .catch(function() { setPublicOn(!next); }).finally(function() { setPublicBusy(false); }); };
+        .catch(function(err) { setPublicOn(!next); setError(String(err.message || err)); }).finally(function() { setPublicBusy(false); }); };
 
     var ready = info !== null && lanOn && info.tokenDetected && info.proxyPort > 0;
     var qrSrc = shareUrl ? '/dsh-remote-x/api/qrcode?text=' + encodeURIComponent(shareUrl) : '';
@@ -203,6 +205,9 @@ function factoryBody(require2) {
       : !info ? h('div', { style: { padding: 24, textAlign: 'center', color: C.sub, fontSize: 13 } }, '加载中…')
       : !lanOn ? h('div', { style: { padding: 16, borderRadius: C.radius, background: C.card, border: '1px solid ' + C.border, fontSize: 13, color: C.sub, lineHeight: 1.7, textAlign: 'center' } }, '局域网访问已关闭。')
       : !info.tokenDetected ? h('div', { style: { padding: 16, borderRadius: C.radius, background: C.card, border: '1px solid ' + C.border, fontSize: 13, color: C.sub } }, '未检测到登录口令。') : null;
+    // 局域网模式走的是入站连接，公网隧道走回环不受影响 —— 这是最容易误判成"插件坏了"的情形
+    var firewallHint = (lanOn && info && info.firewall) ? h('div', { style: { marginTop: 12, padding: 12, borderRadius: C.radius, background: C.warnDim, border: '1px solid rgba(154,103,0,0.30)', color: C.warn, fontSize: 12.5, lineHeight: 1.7 } },
+      '检测到 ' + info.firewall + ' 已启用：手机若连不上，多半是入站端口 ' + info.proxyPort + ' 被防火墙拦了。放行：sudo ufw allow ' + info.proxyPort + '/tcp') : null;
 
     var tips = [{ icon: '📶', text: '手机与电脑需在同一局域网内' }, { icon: '📱', text: '扫码即用手机打开网页端' }, { icon: '🔒', text: '地址含登录口令，可安全分享' }];
 
@@ -211,6 +216,7 @@ function factoryBody(require2) {
         h('div', { style: { flex: 1 } }, h('div', { style: { fontSize: 18, fontWeight: 600 } }, '远程控制'), h('div', { style: { fontSize: 12.5, color: C.sub, marginTop: 2 } }, '用手机扫码接管网页端')),
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } }, badge(lanOn), h(Toggle, { on: lanOn, onChange: toggleLan, busy: busy }))),
       notice,
+      firewallHint,
       ready && h('div', { style: { padding: 28, borderRadius: 16, background: C.cardStrong, border: '1px solid ' + C.border, textAlign: 'center', marginTop: 4 } },
         h('div', { style: { display: 'inline-block', padding: 14, borderRadius: 14, background: '#fff', border: '1px solid ' + C.border } },
           h('img', { src: qrSrc, width: 196, height: 196, alt: 'QR', style: { display: 'block', borderRadius: 4 } })),

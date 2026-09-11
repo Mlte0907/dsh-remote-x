@@ -20,9 +20,10 @@ import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { connect } from 'node:net'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage, ServerResponse, Server } from 'node:http'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { startTunnel } from '../lib/tunnel.mjs'
@@ -31,7 +32,7 @@ import { startTunnel } from '../lib/tunnel.mjs'
 export const name = 'dsh-remote-x'
 
 /** Services required before apply runs. */
-export const inject = ['webServer', 'sessions', 'agents']
+export const inject = ['webServer', 'sessions', 'agents', 'connection']
 
 /** Plugin config. */
 export interface Config {
@@ -90,6 +91,28 @@ export const Config: z<Config> = z.object({
 
 const TOKEN_RE = /token=([A-Za-z0-9_-]+)/g
 
+/**
+ * 首选口令来源：Connection 的进程启动口令交换。
+ *
+ * 原来的两级回落（webServer 软探测 + 启动日志扫描）都依赖运气：前者要求
+ * webServer 上恰好有个 token 形状的字符串字段，后者要求 dsh 把带 token 的
+ * URL 写进 ~/.dsh/desktop/backend.log —— 而源码态 / journald 部署根本没有
+ * 这个日志文件，于是 tokenDetected 恒为 false，代理拿不到口令，手机一律 401。
+ * `connection.authenticatedUrl()` 是官方且稳定的取口令通道（BrowserAuth
+ * 用它给浏览器下发登录链接），进程内恒定可用。
+ */
+function probeConnectionToken(ctx: Context): string | undefined {
+  try {
+    // 必须已在 inject 中声明 'connection'，否则 cordis 拒绝按属性取服务
+    const connection = (ctx as unknown as { connection?: { authenticatedUrl?: (base: string) => string } }).connection
+    const url = connection?.authenticatedUrl?.('http://127.0.0.1')
+    if (typeof url !== 'string') return undefined
+    return new URL(url).searchParams.get('token') ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Soft-probe the webServer service object for a token-shaped string field. */
 function probeRuntimeToken(ctx: Context): string | undefined {
   try {
@@ -125,6 +148,11 @@ async function scanTokenFromLog(): Promise<string | undefined> {
 
 async function resolveToken(ctx: Context, config: Config): Promise<string | undefined> {
   if (config.token !== undefined && config.token.length > 0) return config.token
+  const launch = probeConnectionToken(ctx)
+  if (launch !== undefined) {
+    ctx.logger.info('dsh-remote-x: token resolved from Connection launch token')
+    return launch
+  }
   const probed = probeRuntimeToken(ctx)
   if (probed !== undefined) {
     ctx.logger.info('dsh-remote-x: token resolved from webServer runtime probe')
@@ -388,19 +416,55 @@ function lanAddresses(): string[] {
   return [...new Set(out)]
 }
 
+/**
+ * 本机是否启用了可能拦截入站的防火墙。
+ *
+ * 局域网模式最典型的失败形态：代理明明在 0.0.0.0:3081 正常监听，本机 curl
+ * 也通（本机流量走 lo，不受 ufw 管），但手机一律连不上 —— 因为 ufw 默认拒绝
+ * 入站，而公网隧道连的是 127.0.0.1 所以毫发无伤。这种情况插件无法自行放行
+ * （改防火墙要 root），至少要在界面上说清楚，别让人去怀疑插件。
+ */
+function firewallBlocker(): string | undefined {
+  for (const unit of ['ufw', 'firewalld']) {
+    try {
+      if (execFileSync('systemctl', ['is-active', unit], { encoding: 'utf8' }).trim() === 'active') return unit
+    } catch { /* 未启用或 systemctl 不可用 */ }
+  }
+  return undefined
+}
+
+/** 本机端口是否已有监听者（用于识别由本进程之外托管的代理实例）。 */
+function portInUse(port: number): Promise<boolean> {
+  if (!Number.isInteger(port) || port <= 0) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const socket = connect({ host: '127.0.0.1', port })
+    const done = (value: boolean) => {
+      socket.destroy()
+      resolve(value)
+    }
+    socket.setTimeout(500)
+    socket.once('connect', () => done(true))
+    socket.once('timeout', () => done(false))
+    socket.once('error', () => done(false))
+  })
+}
+
 /** LRU cache for QR SVG rendering (max 64 entries). */
 const qrCache = new Map<string, string>()
 const QR_CACHE_MAX = 64
 
-/** Self-rendered QR SVG — only uses qrcode's core matrix module (no pngjs). */
+/** Self-rendered QR SVG — uses the bundled zero-dependency encoder in lib/qr.mjs. */
 async function renderQrSvg(text: string): Promise<string> {
   const cached = qrCache.get(text)
   if (cached !== undefined) return cached
-  const core: any = await import('qrcode/lib/core/qrcode.js')
-  const create = core?.create ?? core?.default?.create
-  const qr = create(text, { errorCorrectionLevel: 'M' })
-  const size: number = qr.modules.size
-  const data: Uint8Array = qr.modules.data
+  // 内置编码器（见 lib/qr.mjs）：原先依赖 qrcode 包，但它在本机从未安装成功，
+  // 二维码接口一调用就抛错。改为零依赖后不再受宿主包管理影响。
+  const { encodeQr } = await import('../lib/qr.mjs') as unknown as {
+    encodeQr: (value: string) => { size: number; data: Uint8Array }
+  }
+  const qr = encodeQr(text)
+  const size: number = qr.size
+  const data: Uint8Array = qr.data
   const quiet = 2
   const total = size + quiet * 2
   const parts: string[] = []
@@ -426,6 +490,11 @@ async function renderQrSvg(text: string): Promise<string> {
 
 /* 公网隧道状态（运行时、进程内；不跨重启持久化） */
 let publicTunnel: { url: string; stop: () => void; runtime?: { region?: string; protocol?: string; reconnectCount?: number; latencyMs?: () => number | null; status?: string } } | null = null
+
+/* 局域网反代状态（运行时、进程内） */
+let lanProxy: { server: Server; port: number } | null = null
+/** 代理由本进程之外的机制托管（如用户级 systemd 单元）：沿用而不接管。 */
+let lanProxyExternal = false
 
 export async function apply(ctx: Context, config?: Config): Promise<void> {
   const breakpoint = typeof config?.breakpoint === 'number' && config.breakpoint > 0
@@ -467,6 +536,62 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
 
   const base = path.dirname(fileURLToPath(import.meta.url))
 
+  /**
+   * 启动局域网反代。
+   *
+   * 原先一律 `systemctl --user start dsh-remote-proxy.service` —— 但插件从未
+   * 随包提供该单元，也没有安装步骤创建它，于是「开启」永远卡在
+   * "Unit dsh-remote-proxy.service not found"，局域网与公网两个开关一起失效。
+   * 改为在宿主进程内直接托管 lib/proxy.mjs 的反代，任何部署形态都可用。
+   */
+  async function startLanProxy(): Promise<void> {
+    if (lanProxy !== null) return
+    if (await portInUse(proxyPort)) {
+      // 端口已被外部实例占用（例如用户仍用 systemd 单元托管）：沿用，不重复监听
+      lanProxyExternal = true
+      return
+    }
+    const { startRemoteProxy } = await import('../lib/proxy.mjs') as unknown as {
+      startRemoteProxy: (options: Record<string, unknown>) => Promise<Server>
+    }
+    const upstreamPort = typeof (ctx.webServer as unknown as { port?: unknown })?.port === 'number'
+      ? (ctx.webServer as unknown as { port: number }).port
+      : 3080
+    const server = await startRemoteProxy({
+      port: proxyPort,
+      host: '0.0.0.0',
+      upstream: { host: '127.0.0.1', port: upstreamPort },
+      accessKey: config?.accessKey,
+      // 进程内直传登录口令：手机首访时由代替换发 dsh 认证 cookie，
+      // 否则没有口令来源（无 desktop/backend.log）时手机一律 401。
+      token: await resolveTokenLazy(ctx, config),
+      onError: ({ kind, error }: { kind: string; error: Error }) => {
+        ctx.logger.warn(`dsh-remote-x: proxy ${kind} error: ${error.message}`)
+      },
+    })
+    lanProxy = { server, port: proxyPort }
+    lanProxyExternal = false
+    ctx.logger.info(`dsh-remote-x: LAN proxy 0.0.0.0:${proxyPort} → 127.0.0.1:${upstreamPort}`)
+  }
+
+  async function stopLanProxy(): Promise<void> {
+    if (lanProxy !== null) {
+      const { server } = lanProxy
+      lanProxy = null
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve())
+      })
+      return
+    }
+    if (lanProxyExternal) {
+      // 外部托管的实例：尽力停掉；停不掉也不算失败，状态仍以端口探测为准
+      try {
+        execFileSync('systemctl', ['--user', 'stop', 'dsh-remote-proxy.service'], { stdio: 'ignore' })
+      } catch { /* 单元不存在时忽略 */ }
+      lanProxyExternal = false
+    }
+  }
+
   const route: WebRoute = {
     kind: 'prefix',
     path: '/dsh-remote-x/api',
@@ -497,10 +622,7 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
           tokenDetected: token !== undefined,
           accessKeySet: accessKey !== undefined,
           entry,
-          lanEnabled: (() => {
-            try { return execFileSync('systemctl', ['--user', 'is-active', 'dsh-remote-proxy.service'], { encoding: 'utf8' }).trim() === 'active' }
-            catch { return false }
-          })(),
+          lanEnabled: lanProxy !== null || lanProxyExternal || (await portInUse(proxyPort)),
           publicEnabled: publicTunnel !== null,
           publicUrl: publicTunnel?.url ?? null,
           tunnelRegion: publicTunnel?.runtime?.region ?? null,
@@ -512,6 +634,7 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
             try { execFileSync('cloudflared', ['--version'], { stdio: 'ignore' }); return true }
             catch { return false }
           })(),
+          firewall: firewallBlocker() ?? null,
           version: '0.2.2',
         })
         return
@@ -536,8 +659,15 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
           sendError(res, 400, 'text 必须是 http(s) 链接')
           return
         }
-        res.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-store' })
-        res.end(await renderQrSvg(text))
+        try {
+          const svg = await renderQrSvg(text)
+          res.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(svg)
+        } catch (error) {
+          // 不能让异常逃出 handler：未处理的 Promise 拒绝会让 Node 直接终止进程，
+          // 之前依赖缺失时整个 dsh 实例就是这样被打挂的。
+          sendError(res, 500, error instanceof Error ? error.message : String(error))
+        }
         return
       }
 
@@ -552,7 +682,8 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
         try { body = JSON.parse(raw) } catch {}
         const enabled = body.enabled === true
         try {
-          execFileSync('systemctl', ['--user', enabled ? 'start' : 'stop', 'dsh-remote-proxy.service'], { stdio: 'ignore' })
+          if (enabled) await startLanProxy()
+          else await stopLanProxy()
           sendJson(res, 200, { ok: true, enabled })
         } catch (err) {
           sendError(res, 500, err instanceof Error ? err.message : String(err))
@@ -573,12 +704,8 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
         try {
           if (enabled) {
             if (!publicTunnel) {
-              // 公网隧道依赖本机 3081 代理；确保它在跑（否则隧道会 502）
-              let proxyActive = false
-              try {
-                proxyActive = execFileSync('systemctl', ['--user', 'is-active', 'dsh-remote-proxy.service'], { encoding: 'utf8' }).trim() === 'active'
-              } catch { /* 非 active */ }
-              if (!proxyActive) execFileSync('systemctl', ['--user', 'start', 'dsh-remote-proxy.service'], { stdio: 'ignore' })
+              // 公网隧道指向本机代理；代理没起时隧道会 502，先确保它在跑
+              await startLanProxy()
               const accessKey = config?.accessKey
               const token = await resolveTokenLazy(ctx, config)
               const t = await startTunnel(proxyPort, {
@@ -615,6 +742,8 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
     return () => {
       try { publicTunnel?.stop?.() } catch { /* ignore */ }
       publicTunnel = null
+      // 反代由本进程托管，卸载时必须一起释放端口，否则重载后 3081 仍被占用
+      void stopLanProxy().catch(() => { /* ignore */ })
       dispose()
     }
   }, 'dsh-remote-x: api route')
