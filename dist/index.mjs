@@ -1,4 +1,4 @@
-import { c as TUNNEL_TIMEOUT_MS, n as HEALTH_CHECK_INTERVAL_MS, t as BACKOFF_SCHEDULE } from "./constants-Zi7Pzbpq.mjs";
+import { n as HEALTH_CHECK_INTERVAL_MS, o as TUNNEL_TIMEOUT_MS, t as BACKOFF_SCHEDULE } from "./constants-CAvHiWEl.mjs";
 import { open, readFile } from "node:fs/promises";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -834,7 +834,7 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
 			lanProxyExternal = true;
 			return;
 		}
-		const { startRemoteProxy } = await import("./proxy-BWkUcBCF.mjs");
+		const { startRemoteProxy } = await import("./proxy-BsguNCOg.mjs");
 		const upstreamPort = typeof ctx.webServer?.port === "number" ? ctx.webServer.port : 3080;
 		const server = await startRemoteProxy({
 			port: proxyPort,
