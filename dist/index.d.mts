@@ -18,6 +18,24 @@ interface Config {
   token?: string;
   /** Proxy access-key for QR entry URL. When set, QR links use ?key= instead of ?token=. */
   accessKey?: string;
+  /** Cloudflare tunnel region: 'auto' | 'ap' | 'us' | 'eu'. Default 'auto'. */
+  tunnelRegion?: string;
+  /** Cloudflare tunnel protocol: 'quic' | 'http2'. Default 'quic'. */
+  tunnelProtocol?: string;
+  /** Enable tunnel auto-reconnect on crash. Default true. */
+  tunnelReconnect?: boolean;
+  /** Metrics port for cloudflared --metrics (0 = disabled). Default 0. */
+  tunnelMetricsPort?: number;
+  /** Health check interval in ms. Default 30000. */
+  tunnelHealthCheckMs?: number;
+  /** Max reconnection attempts before giving up. Default 10. */
+  tunnelMaxReconnect?: number;
+  /** Enable upstream keep-alive connection pooling. Default true. */
+  proxyKeepAlive?: boolean;
+  /** Enable response compression passthrough. Default true. */
+  proxyCompress?: boolean;
+  /** Enable debug logging. Default false. */
+  debug?: boolean;
 }
 declare const Config: z<Config>;
 declare function apply(ctx: Context, config?: Config): Promise<void>;

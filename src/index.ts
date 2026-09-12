@@ -163,7 +163,6 @@ async function resolveToken(ctx: Context, config: Config): Promise<string | unde
     ctx.logger.info('dsh-remote-x: token resolved from boot log scan')
     return scanned
   }
-  ctx.logger.warn('dsh-remote-x: login token not detected — set config.token to enable the QR panel')
   return undefined
 }
 
@@ -173,11 +172,20 @@ async function resolveToken(ctx: Context, config: Config): Promise<string | unde
  * apply 早于它，且旧的 token 行会随重启滑出扫描窗口。
  */
 let tokenCache: string | undefined | null = null
+let tokenWarned = false
 
 function resolveTokenLazy(ctx: Context, config: Config): Promise<string | undefined> {
   if (tokenCache !== null) return Promise.resolve(tokenCache)
   return resolveToken(ctx, config).then((token) => {
-    tokenCache = token
+    // 只缓存成功结果：启动早期（connection 未就绪等）解析失败时，
+    // undefined 一旦被缓存就永久失效，tokenDetected 恒 false、手机一律 401。
+    // 失败时下次调用重新探测（三级探测都是进程内/本地读取，代价可忽略）。
+    if (token !== undefined) {
+      tokenCache = token
+    } else if (!tokenWarned) {
+      tokenWarned = true
+      ctx.logger.warn('dsh-remote-x: login token not detected — set config.token to enable the QR panel')
+    }
     return token
   })
 }
@@ -364,6 +372,11 @@ function nonceValid(nonce: unknown): boolean {
     nonces.delete(nonce)
     return false
   }
+  // 滑动续期：DSH 设置页长开是常态，nonce 又只在整页加载时注入一次，
+  // 固定 TTL 会让开了超过 10 分钟的页面所有开关 401（实测复现）。
+  // 改为最后一次成功使用后 10 分钟过期：闲置 nonce 照样淘汰，
+  // 且能带有效 nonce 调 API 者本已通过认证，续期无增量泄露。
+  nonces.set(nonce, Date.now())
   return true
 }
 
@@ -559,7 +572,8 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
       : 3080
     const server = await startRemoteProxy({
       port: proxyPort,
-      host: '0.0.0.0',
+      // 监听地址不传，交给 lib 默认值（'::' 双栈，无 IPv6 内核自动回落 0.0.0.0）。
+      // 之前这里硬编码 0.0.0.0，把 lib 的双栈改动整个覆盖成了纯 IPv4。
       upstream: { host: '127.0.0.1', port: upstreamPort },
       accessKey: config?.accessKey,
       // 进程内直传登录口令：手机首访时由代替换发 dsh 认证 cookie，
@@ -571,16 +585,28 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
     })
     lanProxy = { server, port: proxyPort }
     lanProxyExternal = false
-    ctx.logger.info(`dsh-remote-x: LAN proxy 0.0.0.0:${proxyPort} → 127.0.0.1:${upstreamPort}`)
+    const bound = server.address()
+    const shown = bound !== null && typeof bound === 'object'
+      ? `${bound.address}:${bound.port}`
+      : String(bound)
+    ctx.logger.info(`dsh-remote-x: LAN proxy ${shown} → 127.0.0.1:${upstreamPort}`)
   }
 
   async function stopLanProxy(): Promise<void> {
     if (lanProxy !== null) {
       const { server } = lanProxy
       lanProxy = null
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve())
-      })
+      // 不能等 server.close() 的排空回调：手机经代理的 SSE/WebSocket/keep-alive
+      // 连接可能长期不断开，await 它会让 lan-toggle 请求永久挂起（UI 卡死）。
+      // 立即返回；空闲连接马上收，仍存活的连接给 3 秒宽限后强收。
+      server.close()
+      const closer = server as Server & {
+        closeIdleConnections?: () => void
+        closeAllConnections?: () => void
+      }
+      closer.closeIdleConnections?.()
+      const grace = setTimeout(() => closer.closeAllConnections?.(), 3_000)
+      grace.unref?.()
       return
     }
     if (lanProxyExternal) {
@@ -635,7 +661,7 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
             catch { return false }
           })(),
           firewall: firewallBlocker() ?? null,
-          version: '0.2.2',
+          version: '0.2.4',
         })
         return
       }

@@ -1,0 +1,18 @@
+//#region lib/constants.mjs
+const TOKEN_CACHE_MS = 5e3;
+const LOG_TAIL_BYTES = 65536;
+const TUNNEL_TIMEOUT_MS = 3e4;
+const KEEPALIVE_MSECS = 3e4;
+const SOCKET_TIMEOUT = 6e4;
+const BACKOFF_SCHEDULE = [
+	1e3,
+	2e3,
+	4e3,
+	8e3,
+	16e3,
+	6e4
+];
+const HEALTH_CHECK_INTERVAL_MS = 3e4;
+const REMEMBER_COOKIE_MAX_AGE = 31536e3;
+//#endregion
+export { REMEMBER_COOKIE_MAX_AGE as a, TUNNEL_TIMEOUT_MS as c, LOG_TAIL_BYTES as i, HEALTH_CHECK_INTERVAL_MS as n, SOCKET_TIMEOUT as o, KEEPALIVE_MSECS as r, TOKEN_CACHE_MS as s, BACKOFF_SCHEDULE as t };

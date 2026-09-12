@@ -153,6 +153,29 @@ function factoryBody(require2) {
   /* ==================================================================
    * 1) 设置页远程控制
    * ================================================================== */
+  /* nonce 随首页整页注入一次（服务端 10 分钟滑动过期）。页面开久了
+   * API 会 401 —— 收到 401 时重新拉首页铸造新 nonce 并重试一次，
+   * 页面无需手动刷新。重取失败（如 cookie 全丢）则按原错误展示。 */
+  var remintNonce = function() {
+    return fetch('/', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.text() : ''; })
+      .then(function(html) {
+        var m = /__REMOTE_X_NONCE__"\]\s*=\s*"([a-f0-9]+)"/.exec(html || '');
+        if (!m) throw new Error('nonce 重取失败（请刷新页面后重试）');
+        window.__REMOTE_X_NONCE__ = m[1];
+        return m[1];
+      });
+  };
+  var api = function(path, opts, retried) {
+    opts = opts || {};
+    opts.headers = opts.headers || {};
+    opts.headers['x-remote-nonce'] = String(window.__REMOTE_X_NONCE__ || '');
+    return fetch(path, opts).then(function(r) {
+      if (r.status === 401 && !retried) return remintNonce().then(function() { return api(path, opts, true); });
+      return r;
+    });
+  };
+
   function RemoteControlSection() {
     var infoState = useState(null); var info = infoState[0]; var setInfo = infoState[1];
     var errState = useState(null); var error = errState[0]; var setError = errState[1];
@@ -168,11 +191,10 @@ function factoryBody(require2) {
     var entry = info && info.entry ? info.entry : null;
     var shareUrl = entry && info && info.lanIps && info.lanIps[ipIndex]
       ? entry.replace('http://' + info.lanIps[0] + ':', 'http://' + info.lanIps[ipIndex] + ':') : entry;
-    var nonce = function() { return (window.__REMOTE_X_NONCE__ || ''); };
 
     useEffect(function() {
       var alive = true;
-      fetch('/dsh-remote-x/api/qr-info', { headers: { 'x-remote-nonce': String(nonce()) } })
+      api('/dsh-remote-x/api/qr-info')
         .then(function(res) { return res.ok ? res.json() : Promise.reject(new Error('加载失败 (' + res.status + ')')); })
         .then(function(data) { if (!alive) return; setInfo(data); setLanOn(!!data.lanEnabled); setPublicOn(!!data.publicEnabled); setPublicUrl(data.publicUrl || null); setCfAvailable(data.cloudflaredAvailable !== false); })
         .catch(function(err) { if (alive) setError(String(err.message || err)); });
@@ -184,11 +206,11 @@ function factoryBody(require2) {
 
     var readErr = function(r) { return r.json().then(function(d) { return (d && d.error) ? d.error : ('HTTP ' + r.status); }).catch(function() { return 'HTTP ' + r.status; }); };
     var toggleLan = function() { if (busy) return; var next = !lanOn; setBusy(true); setLanOn(next); setError(null);
-      fetch('/dsh-remote-x/api/lan-toggle', { method: 'POST', headers: { 'content-type': 'application/json', 'x-remote-nonce': String(nonce()) }, body: JSON.stringify({ enabled: next }) })
+      api('/dsh-remote-x/api/lan-toggle', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: next }) })
         .then(function(r) { return r.ok ? r.json() : readErr(r).then(function(m) { throw new Error(m); }); })
         .catch(function(err) { setLanOn(!next); setError(String(err.message || err)); }).finally(function() { setBusy(false); }); };
     var togglePublic = function() { if (publicBusy) return; var next = !publicOn; setPublicBusy(true); setPublicOn(next); setError(null);
-      fetch('/dsh-remote-x/api/public-toggle', { method: 'POST', headers: { 'content-type': 'application/json', 'x-remote-nonce': String(nonce()) }, body: JSON.stringify({ enabled: next }) })
+      api('/dsh-remote-x/api/public-toggle', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: next }) })
         .then(function(r) { return r.ok ? r.json() : readErr(r).then(function(m) { throw new Error(m); }); })
         .then(function(d) { if (d.enabled) setPublicUrl(d.url || null); else setPublicUrl(null); })
         .catch(function(err) { setPublicOn(!next); setError(String(err.message || err)); }).finally(function() { setPublicBusy(false); }); };
