@@ -862,7 +862,7 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
 			lanProxyExternal = true;
 			return;
 		}
-		const { startRemoteProxy } = await import("./proxy-BRsIWdUt.mjs");
+		const { startRemoteProxy } = await import("./proxy-BaAXc4DM.mjs");
 		const upstreamPort = typeof ctx.webServer?.port === "number" ? ctx.webServer.port : 3080;
 		const server = await startRemoteProxy({
 			port: proxyPort,
