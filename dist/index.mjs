@@ -1,11 +1,11 @@
 import { c as TUNNEL_TIMEOUT_MS, n as HEALTH_CHECK_INTERVAL_MS, t as BACKOFF_SCHEDULE } from "./constants-Zi7Pzbpq.mjs";
 import { open, readFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir, networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { connect } from "node:net";
 import z from "@deepseek-ai/schemastery";
 //#region lib/tunnel-supervisor.mjs
@@ -212,6 +212,53 @@ async function resolveTunnelRegion(region = "auto") {
 //#endregion
 //#region lib/tunnel.mjs
 const TMP_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+/** 记录当前 cloudflared 的 pid，供进程异常退出后下一次启动清扫孤儿。 */
+function pidFilePath() {
+	return path.join(homedir(), ".dsh", "remote-x-cloudflared.pid");
+}
+/** /proc/<pid>/cmdline 是否确实是本插件的 cloudflared（防 PID 复用误杀）。 */
+function isOurCloudflared(pid) {
+	try {
+		const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+		return cmdline.includes("cloudflared") && cmdline.includes("--url");
+	} catch {
+		return false;
+	}
+}
+/**
+* 清扫孤儿隧道进程。
+*
+* cloudflared 是插件 spawn 的子进程，dsh 崩溃/被 kill -9 时它不会跟着死，
+* 变成孤儿后隧道仍然挂在公网上，而新进程内存里的开关状态是"已停用"——
+* 公网等于假关。启动隧道前和插件加载时都应清扫：
+*   1. pidfile 记录的 pid（校验 /proc cmdline 确实是 cloudflared --url）；
+*   2. pkill 兜底匹配精确的 `cloudflared tunnel --url http://127.0.0.1:<port>`。
+* @returns {Promise<boolean>} 是否清掉了至少一个进程
+*/
+async function sweepOrphanTunnel(port) {
+	let killed = false;
+	const pidFile = pidFilePath();
+	try {
+		const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+		if (Number.isInteger(pid) && pid > 0 && isOurCloudflared(pid)) {
+			process.kill(pid, "SIGTERM");
+			killed = true;
+		}
+	} catch {}
+	try {
+		unlinkSync(pidFile);
+	} catch {}
+	try {
+		const { execFile } = await import("node:child_process");
+		await new Promise((resolve) => {
+			execFile("pkill", ["-f", `cloudflared tunnel --url http://127.0.0.1:${port}`], { timeout: 5e3 }, (err) => {
+				if (!err) killed = true;
+				resolve();
+			});
+		});
+	} catch {}
+	return killed;
+}
 function resolveBinary() {
 	const candidates = [
 		path.join(homedir(), ".local", "bin", "cloudflared"),
@@ -238,6 +285,7 @@ async function startTunnel(port, opts = {}) {
 	const resolvedRegion = await resolveTunnelRegion(region);
 	let tunnelUrl = null;
 	let tunnelProtocol = protocol;
+	await sweepOrphanTunnel(port);
 	function buildArgs() {
 		const args = [];
 		if (token && domain) args.push("tunnel", "--token", token);
@@ -255,6 +303,9 @@ async function startTunnel(port, opts = {}) {
 				"pipe",
 				"pipe"
 			] });
+			if (child.pid) try {
+				writeFileSync(pidFilePath(), String(child.pid));
+			} catch {}
 			let settled = false;
 			const finish = (fn, value) => {
 				if (!settled) {
@@ -301,6 +352,9 @@ async function startTunnel(port, opts = {}) {
 				try {
 					result.child.kill("SIGTERM");
 				} catch {}
+				try {
+					unlinkSync(pidFilePath());
+				} catch {}
 			},
 			runtime: {
 				url: result.url,
@@ -340,6 +394,9 @@ async function startTunnel(port, opts = {}) {
 			healthChecker.stop();
 			metrics.stop();
 			supervisor.stop();
+			try {
+				unlinkSync(pidFilePath());
+			} catch {}
 		},
 		supervisor,
 		metrics
@@ -506,9 +563,9 @@ async function coldTitles(query, ids) {
 	}
 	return out;
 }
-async function buildTaskList(ctx) {
+async function buildTaskList(ctx, debug = false) {
 	const query = ctx.get("sessionQuery");
-	try {
+	if (debug) try {
 		const live0 = ctx.sessions.list()[0];
 		if (live0 !== void 0) ctx.logger.info(`remote-x-diag live header keys=${JSON.stringify(Object.keys(live0.header))} payload=${JSON.stringify(live0.header)}`);
 		if (query !== void 0) {
@@ -627,10 +684,42 @@ function lanAddresses() {
 * 入站，而公网隧道连的是 127.0.0.1 所以毫发无伤。这种情况插件无法自行放行
 * （改防火墙要 root），至少要在界面上说清楚，别让人去怀疑插件。
 */
-function firewallBlocker() {
-	for (const unit of ["ufw", "firewalld"]) try {
-		if (execFileSync("systemctl", ["is-active", unit], { encoding: "utf8" }).trim() === "active") return unit;
-	} catch {}
+/** 异步跑一个子进程，仅关心退出码是否为 0。 */
+function execFileOk(cmd, args) {
+	return new Promise((resolve) => {
+		execFile(cmd, args, { timeout: 5e3 }, (error) => resolve(error === null));
+	});
+}
+function cacheFresh(cache, ttlMs) {
+	return cache !== null && Date.now() - cache.at < ttlMs ? cache.value : null;
+}
+let cloudflaredCache = null;
+/** cloudflared 是否可用（60s 缓存）。探测在宿主主进程上执行，绝不能同步 spawn。 */
+async function cloudflaredAvailableCached() {
+	const fresh = cacheFresh(cloudflaredCache, 6e4);
+	if (fresh !== null) return fresh;
+	const value = await execFileOk("cloudflared", ["--version"]);
+	cloudflaredCache = {
+		value,
+		at: Date.now()
+	};
+	return value;
+}
+let firewallCache = null;
+/** 防火墙探测（60s 缓存）。systemctl is-active 仅对 active 返回 0。 */
+async function firewallBlockerCached() {
+	const fresh = cacheFresh(firewallCache, 6e4);
+	if (fresh !== null) return fresh;
+	let value = null;
+	for (const unit of ["ufw", "firewalld"]) if (await execFileOk("systemctl", ["is-active", unit])) {
+		value = unit;
+		break;
+	}
+	firewallCache = {
+		value,
+		at: Date.now()
+	};
+	return value;
 }
 /** 本机端口是否已有监听者（用于识别由本进程之外托管的代理实例）。 */
 function portInUse(port) {
@@ -689,8 +778,11 @@ async function apply(ctx, config) {
 function setM(){var m=innerWidth<${breakpoint};if(m)document.body.classList.add('rm-x-mobile');else document.body.classList.remove('rm-x-mobile')}
 setM();
 var rt;addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(setM,100)});
-/* 兜底：客户端模块加载失败时恢复桌面布局 */
-setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!document.getElementById('rm-x-dashboard'))document.body.classList.remove('rm-x-mobile')},5000);
+/* 兜底：客户端模块加载失败时恢复桌面布局。
+ * rm-x-ready 由客户端模块建好仪表盘后打上——隧道/弱网下加载超过 5s 是常态，
+ * 不能只看时间；ready 已打（或 dashboard 已存在）就绝不能回退，否则手机上
+ * 没有 resize 事件，坏了只能刷新。 */
+setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!document.body.classList.contains('rm-x-ready')&&!document.getElementById('rm-x-dashboard'))document.body.classList.remove('rm-x-mobile')},5000);
 })();`;
 		ctx.on("webserver/index-inject", ((table) => {
 			let fresh = css;
@@ -714,7 +806,20 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
 		}));
 		ctx.logger.info(`dsh-remote-x: mobile layer injected (breakpoint ${breakpoint}px)`);
 	} else ctx.logger.warn("dsh-remote-x: inject/mobile.css missing — mobile layer disabled");
-	path.dirname(fileURLToPath(import.meta.url));
+	const base = path.dirname(fileURLToPath(import.meta.url));
+	/** 版本号单一来源：读 package.json，避免响应里硬编码字符串随版本漂移。 */
+	function readPluginVersion() {
+		try {
+			const pkg = JSON.parse(readFileSync(path.join(base, "..", "package.json"), "utf8"));
+			return typeof pkg.version === "string" && pkg.version.length > 0 ? pkg.version : "unknown";
+		} catch {
+			return "unknown";
+		}
+	}
+	const pluginVersion = readPluginVersion();
+	sweepOrphanTunnel(proxyPort).then((swept) => {
+		if (swept) ctx.logger.warn("dsh-remote-x: swept orphan cloudflared left by a previous process");
+	}).catch(() => {});
 	/**
 	* 启动局域网反代。
 	*
@@ -729,7 +834,7 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
 			lanProxyExternal = true;
 			return;
 		}
-		const { startRemoteProxy } = await import("./proxy-n_H_gGkj.mjs");
+		const { startRemoteProxy } = await import("./proxy-BWkUcBCF.mjs");
 		const upstreamPort = typeof ctx.webServer?.port === "number" ? ctx.webServer.port : 3080;
 		const server = await startRemoteProxy({
 			port: proxyPort,
@@ -804,22 +909,19 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
 					tunnelReconnectCount: publicTunnel?.runtime?.reconnectCount ?? 0,
 					tunnelLatencyMs: typeof publicTunnel?.runtime?.latencyMs === "function" ? publicTunnel.runtime.latencyMs() ?? null : null,
 					tunnelStatus: publicTunnel?.runtime?.status ?? "disabled",
-					cloudflaredAvailable: (() => {
-						try {
-							execFileSync("cloudflared", ["--version"], { stdio: "ignore" });
-							return true;
-						} catch {
-							return false;
-						}
-					})(),
-					firewall: firewallBlocker() ?? null,
-					version: "0.2.4"
+					cloudflaredAvailable: await cloudflaredAvailableCached(),
+					firewall: await firewallBlockerCached(),
+					version: pluginVersion
 				});
 				return;
 			}
 			if (sub === "/tasks" && req.method === "GET") {
+				if (!nonceValid(req.headers["x-remote-nonce"])) {
+					sendError(res, 401, "missing or invalid nonce");
+					return;
+				}
 				try {
-					sendJson(res, 200, await buildTaskList(ctx));
+					sendJson(res, 200, await buildTaskList(ctx, config?.debug === true));
 				} catch (error) {
 					sendError(res, 500, error instanceof Error ? error.message : String(error));
 				}

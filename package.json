@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-x",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "DeepSeek Harness 移动端适配插件（dsh-remote-x）：向网页端注入移动端覆盖层，手机复用网页端全部功能，另附局域网反向代理 CLI",
   "type": "module",
   "main": "dist/index.mjs",

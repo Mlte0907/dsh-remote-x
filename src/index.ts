@@ -19,14 +19,14 @@ import { randomBytes } from 'node:crypto'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { connect } from 'node:net'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { IncomingMessage, ServerResponse, Server } from 'node:http'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import { startTunnel } from '../lib/tunnel.mjs'
+import { startTunnel, sweepOrphanTunnel } from '../lib/tunnel.mjs'
 
 /** Stable Cordis plugin name. */
 export const name = 'dsh-remote-x'
@@ -268,20 +268,23 @@ async function coldTitles(query: any, ids: string[]): Promise<Map<string, string
   return out
 }
 
-async function buildTaskList(ctx: Context): Promise<{ groups: any[]; taskCount: number }> {
+async function buildTaskList(ctx: Context, debug = false): Promise<{ groups: any[]; taskCount: number }> {
   const query = ctx.get('sessionQuery')
-  // 诊断：dump 会话 header 字段与 listSessions 结构（用于对齐网页端侧栏过滤）
-  try {
-    const live0 = (ctx.sessions.list() as readonly SessionLike[])[0]
-    if (live0 !== undefined) {
-      ctx.logger.info(`remote-x-diag live header keys=${JSON.stringify(Object.keys(live0.header))} payload=${JSON.stringify(live0.header)}`)
+  // 诊断：dump 会话 header 字段与 listSessions 结构（用于对齐网页端侧栏过滤），
+  // 只在 config.debug 下输出——默认每次 /tasks 都倒全量 header 是调试遗留。
+  if (debug) {
+    try {
+      const live0 = (ctx.sessions.list() as readonly SessionLike[])[0]
+      if (live0 !== undefined) {
+        ctx.logger.info(`remote-x-diag live header keys=${JSON.stringify(Object.keys(live0.header))} payload=${JSON.stringify(live0.header)}`)
+      }
+      if (query !== undefined) {
+        const recs = await query.listSessions()
+        ctx.logger.info(`remote-x-diag listSessions count=${recs.length} firstKeys=${JSON.stringify(Object.keys(recs[0] ?? {}))} first=${JSON.stringify(recs[0]?.header ?? recs[0])}`)
+      }
+    } catch (error) {
+      ctx.logger.info(`remote-x-diag failed: ${error instanceof Error ? error.message : String(error)}`)
     }
-    if (query !== undefined) {
-      const recs = await query.listSessions()
-      ctx.logger.info(`remote-x-diag listSessions count=${recs.length} firstKeys=${JSON.stringify(Object.keys(recs[0] ?? {}))} first=${JSON.stringify(recs[0]?.header ?? recs[0])}`)
-    }
-  } catch (error) {
-    ctx.logger.info(`remote-x-diag failed: ${error instanceof Error ? error.message : String(error)}`)
   }
   const sessions = new Map<string, { header: SessionHeaderLike; live: boolean; events?: readonly SessionEventLike[] }>()
 
@@ -437,13 +440,43 @@ function lanAddresses(): string[] {
  * 入站，而公网隧道连的是 127.0.0.1 所以毫发无伤。这种情况插件无法自行放行
  * （改防火墙要 root），至少要在界面上说清楚，别让人去怀疑插件。
  */
-function firewallBlocker(): string | undefined {
+
+/** 异步跑一个子进程，仅关心退出码是否为 0。 */
+function execFileOk(cmd: string, args: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: 5_000 }, (error) => resolve(error === null))
+  })
+}
+
+interface ProbeCache<T> { value: T; at: number }
+
+function cacheFresh<T>(cache: ProbeCache<T> | null, ttlMs: number): T | null {
+  return cache !== null && Date.now() - cache.at < ttlMs ? cache.value : null
+}
+
+let cloudflaredCache: ProbeCache<boolean> | null = null
+
+/** cloudflared 是否可用（60s 缓存）。探测在宿主主进程上执行，绝不能同步 spawn。 */
+async function cloudflaredAvailableCached(): Promise<boolean> {
+  const fresh = cacheFresh(cloudflaredCache, 60_000)
+  if (fresh !== null) return fresh
+  const value = await execFileOk('cloudflared', ['--version'])
+  cloudflaredCache = { value, at: Date.now() }
+  return value
+}
+
+let firewallCache: ProbeCache<string | null> | null = null
+
+/** 防火墙探测（60s 缓存）。systemctl is-active 仅对 active 返回 0。 */
+async function firewallBlockerCached(): Promise<string | null> {
+  const fresh = cacheFresh(firewallCache, 60_000)
+  if (fresh !== null) return fresh
+  let value: string | null = null
   for (const unit of ['ufw', 'firewalld']) {
-    try {
-      if (execFileSync('systemctl', ['is-active', unit], { encoding: 'utf8' }).trim() === 'active') return unit
-    } catch { /* 未启用或 systemctl 不可用 */ }
+    if (await execFileOk('systemctl', ['is-active', unit])) { value = unit; break }
   }
-  return undefined
+  firewallCache = { value, at: Date.now() }
+  return value
 }
 
 /** 本机端口是否已有监听者（用于识别由本进程之外托管的代理实例）。 */
@@ -527,8 +560,11 @@ export async function apply(ctx: Context, config?: Config): Promise<void> {
 function setM(){var m=innerWidth<${breakpoint};if(m)document.body.classList.add('rm-x-mobile');else document.body.classList.remove('rm-x-mobile')}
 setM();
 var rt;addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(setM,100)});
-/* 兜底：客户端模块加载失败时恢复桌面布局 */
-setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!document.getElementById('rm-x-dashboard'))document.body.classList.remove('rm-x-mobile')},5000);
+/* 兜底：客户端模块加载失败时恢复桌面布局。
+ * rm-x-ready 由客户端模块建好仪表盘后打上——隧道/弱网下加载超过 5s 是常态，
+ * 不能只看时间；ready 已打（或 dashboard 已存在）就绝不能回退，否则手机上
+ * 没有 resize 事件，坏了只能刷新。 */
+setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!document.body.classList.contains('rm-x-ready')&&!document.getElementById('rm-x-dashboard'))document.body.classList.remove('rm-x-mobile')},5000);
 })();`
     ctx.on('webserver/index-inject', ((table: Array<Record<string, unknown>>) => {
       // 每次请求重读 mobile.css：调 CSS 后刷新页面即生效，无需重启宿主；
@@ -548,6 +584,21 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
   /* ---------------- 2) settings-page QR panel API ---------------- */
 
   const base = path.dirname(fileURLToPath(import.meta.url))
+
+  /** 版本号单一来源：读 package.json，避免响应里硬编码字符串随版本漂移。 */
+  function readPluginVersion(): string {
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(base, '..', 'package.json'), 'utf8')) as { version?: string }
+      return typeof pkg.version === 'string' && pkg.version.length > 0 ? pkg.version : 'unknown'
+    } catch { return 'unknown' }
+  }
+  const pluginVersion = readPluginVersion()
+
+  // 清扫上一次进程留下的孤儿隧道：dsh 被强杀时 cloudflared 不会跟着死，
+  // 不清扫的话公网隧道会"假关"——UI 显示停用，隧道实际还挂在公网上。
+  void sweepOrphanTunnel(proxyPort).then((swept) => {
+    if (swept) ctx.logger.warn('dsh-remote-x: swept orphan cloudflared left by a previous process')
+  }).catch(() => { /* 尽力 */ })
 
   /**
    * 启动局域网反代。
@@ -656,19 +707,21 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
           tunnelReconnectCount: publicTunnel?.runtime?.reconnectCount ?? 0,
           tunnelLatencyMs: typeof publicTunnel?.runtime?.latencyMs === 'function' ? (publicTunnel.runtime.latencyMs() ?? null) : null,
           tunnelStatus: publicTunnel?.runtime?.status ?? 'disabled',
-          cloudflaredAvailable: (() => {
-            try { execFileSync('cloudflared', ['--version'], { stdio: 'ignore' }); return true }
-            catch { return false }
-          })(),
-          firewall: firewallBlocker() ?? null,
-          version: '0.2.4',
+          cloudflaredAvailable: await cloudflaredAvailableCached(),
+          firewall: await firewallBlockerCached(),
+          version: pluginVersion,
         })
         return
       }
 
       if (sub === '/tasks' && req.method === 'GET') {
+        // 任务列表含标题/路径/运行状态，与其它 API 一致走 nonce 门禁
+        if (!nonceValid(req.headers['x-remote-nonce'])) {
+          sendError(res, 401, 'missing or invalid nonce')
+          return
+        }
         try {
-          sendJson(res, 200, await buildTaskList(ctx))
+          sendJson(res, 200, await buildTaskList(ctx, config?.debug === true))
         } catch (error) {
           sendError(res, 500, error instanceof Error ? error.message : String(error))
         }

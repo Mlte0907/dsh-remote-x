@@ -31,7 +31,7 @@ function factoryBody(require2) {
         cursor: props.busy ? 'wait' : 'pointer', background: props.on ? C.accent : 'rgba(127,127,127,.35)',
         position: 'relative', transition: 'background .2s', flexShrink: 0, opacity: props.busy ? 0.7 : 1 },
     }, h('span', { style: { position: 'absolute', top: 3, left: props.on ? 21 : 3, width: 18, height: 18,
-      borderRadius: '50%', background: '#fff', boxShadow: '0 1px 2px rgbadebugLog(0,0,0.25)', transition: 'left .2s' } }));
+      borderRadius: '50%', background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.25)', transition: 'left .2s' } }));
   }
 
   /* ==================================================================
@@ -472,6 +472,10 @@ function factoryBody(require2) {
       dashEl.id = 'rm-x-dashboard';
       dashEl.innerHTML = '<div class="rmx-header"><h1 class="rmx-title">远程控制</h1><p class="rmx-subtitle">手机与电脑需在同一局域网内</p></div><div class="rmx-info-card">本次连接可查看当前设备上已打开的项目、任务和会话。</div><div class="rmx-section-head"><h2 class="rmx-section-title">当前设备上的工作区和任务</h2><span class="rmx-section-tools"><button class="rmx-tool-btn rmx-view-toggle" title="切换视图">' + ICON.viewList + '</button><button class="rmx-tool-btn rmx-collapse-all" title="展开/折叠全部">' + ICON.collapse + '</button><button class="rmx-tool-btn rmx-refresh" title="刷新">' + ICON.refresh + '</button></span></div><div class="rmx-counts"></div><div class="rmx-body" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:calc(env(safe-area-inset-bottom,0px)+24px)"></div>';
       document.body.appendChild(dashEl);
+      // 就绪标记：注入层 5s 兜底回退只对"客户端模块没起来"生效。
+      // 隧道/弱网下模块加载常超 5s，仪表盘建好就打标，兜底绝不误杀（手机没有
+      // resize 事件，误杀后只能刷新恢复）。
+      document.body.classList.add('rm-x-ready');
 
       backEl = document.createElement('div');
       backEl.id = 'rm-x-backbar';
