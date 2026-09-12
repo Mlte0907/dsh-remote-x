@@ -14,7 +14,7 @@
  */
 
 import { open, readFile } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -542,6 +542,29 @@ let lanProxy: { server: Server; port: number } | null = null
 /** 代理由本进程之外的机制托管（如用户级 systemd 单元）：沿用而不接管。 */
 let lanProxyExternal = false
 
+/* ---------------- 局域网开关持久化（跨重启自动恢复） ---------------- */
+
+/**
+ * 开关状态只存在进程内存里，dsh 崩溃/重启后"远程控制"总是回到关闭，
+ * 每次都要手动重开（2026-09-13 用户反馈）。落盘一行 JSON，apply 时读回。
+ * 公网隧道不恢复：快速隧道 URL 每次启动都变，静默重开一个用户不知道的
+ * 公网入口是安全反模式。
+ */
+const lanStateFile = () => path.join(homedir(), '.dsh', 'remote-x-state.json')
+
+function persistLanState(enabled: boolean): void {
+  try {
+    writeFileSync(lanStateFile(), JSON.stringify({ lan: enabled, at: Date.now() }))
+  } catch { /* 尽力而为；读不回大不了退回手动开 */ }
+}
+
+function readLanState(): boolean {
+  try {
+    const raw = JSON.parse(readFileSync(lanStateFile(), 'utf8')) as { lan?: boolean }
+    return raw.lan === true
+  } catch { return false }
+}
+
 export async function apply(ctx: Context, config?: Config): Promise<void> {
   const breakpoint = typeof config?.breakpoint === 'number' && config.breakpoint > 0
     ? config.breakpoint
@@ -599,6 +622,16 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
   void sweepOrphanTunnel(proxyPort).then((swept) => {
     if (swept) ctx.logger.warn('dsh-remote-x: swept orphan cloudflared left by a previous process')
   }).catch(() => { /* 尽力 */ })
+
+  // 局域网开关自动恢复：崩溃/重启后无需手动重开（状态见 persistLanState）
+  if (readLanState()) {
+    try {
+      await startLanProxy()
+      ctx.logger.info('dsh-remote-x: LAN proxy auto-resumed from persisted state')
+    } catch (error) {
+      ctx.logger.warn(`dsh-remote-x: LAN proxy auto-resume failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
 
   /**
    * 启动局域网反代。
@@ -763,6 +796,7 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
         try {
           if (enabled) await startLanProxy()
           else await stopLanProxy()
+          persistLanState(enabled)
           sendJson(res, 200, { ok: true, enabled })
         } catch (err) {
           sendError(res, 500, err instanceof Error ? err.message : String(err))

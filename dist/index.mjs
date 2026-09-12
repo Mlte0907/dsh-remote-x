@@ -766,6 +766,28 @@ let publicTunnel = null;
 let lanProxy = null;
 /** 代理由本进程之外的机制托管（如用户级 systemd 单元）：沿用而不接管。 */
 let lanProxyExternal = false;
+/**
+* 开关状态只存在进程内存里，dsh 崩溃/重启后"远程控制"总是回到关闭，
+* 每次都要手动重开（2026-09-13 用户反馈）。落盘一行 JSON，apply 时读回。
+* 公网隧道不恢复：快速隧道 URL 每次启动都变，静默重开一个用户不知道的
+* 公网入口是安全反模式。
+*/
+const lanStateFile = () => path.join(homedir(), ".dsh", "remote-x-state.json");
+function persistLanState(enabled) {
+	try {
+		writeFileSync(lanStateFile(), JSON.stringify({
+			lan: enabled,
+			at: Date.now()
+		}));
+	} catch {}
+}
+function readLanState() {
+	try {
+		return JSON.parse(readFileSync(lanStateFile(), "utf8")).lan === true;
+	} catch {
+		return false;
+	}
+}
 async function apply(ctx, config) {
 	const breakpoint = typeof config?.breakpoint === "number" && config.breakpoint > 0 ? config.breakpoint : 768;
 	const proxyPort = typeof config?.proxyPort === "number" ? config.proxyPort : 3081;
@@ -820,6 +842,12 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
 	sweepOrphanTunnel(proxyPort).then((swept) => {
 		if (swept) ctx.logger.warn("dsh-remote-x: swept orphan cloudflared left by a previous process");
 	}).catch(() => {});
+	if (readLanState()) try {
+		await startLanProxy();
+		ctx.logger.info("dsh-remote-x: LAN proxy auto-resumed from persisted state");
+	} catch (error) {
+		ctx.logger.warn(`dsh-remote-x: LAN proxy auto-resume failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
 	/**
 	* 启动局域网反代。
 	*
@@ -834,7 +862,7 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
 			lanProxyExternal = true;
 			return;
 		}
-		const { startRemoteProxy } = await import("./proxy-BsguNCOg.mjs");
+		const { startRemoteProxy } = await import("./proxy-BRsIWdUt.mjs");
 		const upstreamPort = typeof ctx.webServer?.port === "number" ? ctx.webServer.port : 3080;
 		const server = await startRemoteProxy({
 			port: proxyPort,
@@ -966,6 +994,7 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
 				try {
 					if (enabled) await startLanProxy();
 					else await stopLanProxy();
+					persistLanState(enabled);
 					sendJson(res, 200, {
 						ok: true,
 						enabled
