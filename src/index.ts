@@ -211,7 +211,15 @@ interface SessionHeaderLike {
 interface SessionLike {
   readonly id: SessionId
   readonly header: SessionHeaderLike
-  snapshotEvents(): readonly SessionEventLike[]
+  snapshotEvents?(): readonly SessionEventLike[]
+  ownEvents?(): readonly SessionEventLike[]
+}
+
+/** DSH ≤0.1.4 用 snapshotEvents，≥0.1.5 弃用改用 ownEvents；两者都不存在则返回 [] */
+function readSessionEvents(session: SessionLike): readonly SessionEventLike[] {
+  if (typeof session.snapshotEvents === 'function') return session.snapshotEvents()
+  if (typeof session.ownEvents === 'function') return session.ownEvents()
+  return []
 }
 
 function textOfBlocks(blocks: readonly any[] | undefined): string {
@@ -290,7 +298,7 @@ async function buildTaskList(ctx: Context, debug = false): Promise<{ groups: any
 
   for (const session of ctx.sessions.list() as readonly SessionLike[]) {
     if (!isTopLevel(session.header)) continue
-    sessions.set(session.id, { header: session.header, live: true, events: session.snapshotEvents() })
+    sessions.set(session.id, { header: session.header, live: true, events: readSessionEvents(session) })
   }
   if (query !== undefined) {
     try {
