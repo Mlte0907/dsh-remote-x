@@ -270,8 +270,44 @@ function factoryBody(require2) {
    * ================================================================== */
   var SESSION_KEY = 'rmx-view';
 
-  function mobileLayer(ctx, sessions, workspaces) {
-    if (!sessions || !workspaces) return;
+  function mobileLayer(ctx, sessions, workspaces, uiWorkspace) {
+    var restorePending = sessionStorage.getItem(SESSION_KEY) === 'session';
+    var navigationVersion = 0;
+
+    function currentSessionId(snap) {
+      var rows = Object.values(sessionsById(snap));
+      var current = rows.find(function(s) { return s.retainedBy && s.retainedBy.mainView > 0; });
+      return current && current.id;
+    }
+
+    function openSession(sid) {
+      navigationVersion++;
+      restorePending = false;
+      try {
+        uiWorkspace.openSession(sid);
+        enterSession();
+      } catch (error) {
+        console.warn('dsh-remote-x: session navigation failed', error);
+      }
+    }
+
+    function createSession(wid) {
+      navigationVersion++;
+      restorePending = false;
+      try {
+        enterSession();
+        // openWorkspace 复用该工作区已有的空白会话（connectWorkspace 语义），
+        // 不像 sessions.create 那样每次点击都新建一条空白记录。
+        uiWorkspace.openWorkspace(wid);
+      } catch (error) {
+        console.warn('dsh-remote-x: workspace navigation failed', error);
+      }
+    }
+
+    function restoreSessionView() {
+      // Catalog readiness can precede the main-view reference publication.
+      if (restorePending && isMobile() && currentSessionId(sessions.list.getSnapshot())) enterSession();
+    }
 
     var dashEl = null, backEl = null, menuEl = null, menuBackdrop = null;
     var collapsed = {};
@@ -350,7 +386,7 @@ function factoryBody(require2) {
         + '<button class="rmx-menu-item danger" data-action="delete" aria-label="归档会话">' + ICON.trash + ' 归档会话</button>';
       document.body.appendChild(menuEl);
 
-      menuEl.querySelector('[data-action="open"]').addEventListener('click', function() { hideMenu(); enterSession(); sessions.open(sid); });
+      menuEl.querySelector('[data-action="open"]').addEventListener('click', function() { hideMenu(); openSession(sid); });
       menuEl.querySelector('[data-action="delete"]').addEventListener('click', function() {
         hideMenu();
         if (confirm('确定删除「' + (title || '新会话') + '」？')) {
@@ -490,19 +526,13 @@ function factoryBody(require2) {
         if (target) { var w = target.dataset.collapse; collapsed[w] = !collapsed[w]; render(); return; }
         target = e.target.closest('[data-add]');
         if (target) {
-          var wid = target.dataset.add;
-          enterSession();
-          try {
-            if (typeof sessions.create === 'function') {
-              sessions.create(wid ? { workspaceId: wid } : {}).then(function(id) { sessions.open(id); }).catch(function() {});
-            }
-          } catch(ex) {}
+          createSession(target.dataset.add);
           return;
         }
         target = e.target.closest('[data-open]');
         if (target) {
           var sid = target.dataset.open;
-          if (sid && typeof sessions.open === 'function') { enterSession(); sessions.open(sid); }
+          if (sid) openSession(sid);
           return;
         }
         if (e.target.closest('.rmx-refresh')) { refreshAndRender(); return; }
@@ -566,7 +596,7 @@ function factoryBody(require2) {
       var wsSnap = workspaces.list.getSnapshot();
       var sessSnap = sessions.list.getSnapshot();
       var byId = sessionsById(sessSnap);
-      var currentId = pick(sessSnap, ['current', 'currentId', 'activeId'], undefined);
+      var currentId = currentSessionId(sessSnap);
       var body = dashEl.querySelector('.rmx-body');
       var counts = dashEl.querySelector('.rmx-counts');
 
@@ -716,29 +746,23 @@ function factoryBody(require2) {
       });
     }
     function enterSession() {
+      restorePending = false;
       sessionStorage.setItem(SESSION_KEY, 'session');
       document.body.classList.add('rm-x-in-session');
       if (dashEl) dashEl.style.display = 'none';
       showFrame();
     }
     function exitToDashboard() {
+      navigationVersion++;
+      restorePending = false;
       cleanup();
       sessionStorage.setItem(SESSION_KEY, 'dashboard');
       document.body.classList.remove('rm-x-in-session');
       hideFrame();
       if (dashEl) dashEl.style.display = '';
-      // 如果当前会话是空白的，清除它（匹配侧栏行为：离开空白会话时丢弃）
-      try {
-        var snap = sessions.list.getSnapshot();
-        if (snap.current) {
-          var cur = snap.byId && snap.byId[snap.current];
-          if (cur && cur.blank) {
-            sessions.clear();
-          }
-        }
-      } catch(e) {}
+      // The dashboard changes visibility; uiWorkspace owns the main Session reference.
       // Re-subscribe after cleanup for dashboard view
-      unsubSessions = trackSub(sessions.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
+      unsubSessions = trackSub(sessions.list.subscribe(function() { restoreSessionView(); if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
       unsubWorkspaces = trackSub(workspaces.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
       render();
     }
@@ -763,11 +787,13 @@ function factoryBody(require2) {
           if (isMobile() && !dashEl) {
             buildSkeleton();
             // Re-subscribe after desktop cleanup
-            if (!unsubSessions) unsubSessions = trackSub(sessions.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
+            if (!unsubSessions) unsubSessions = trackSub(sessions.list.subscribe(function() { restoreSessionView(); if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
             if (!unsubWorkspaces) unsubWorkspaces = trackSub(workspaces.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
             tryRender();
           }
           else if (!isMobile() && dashEl) {
+            navigationVersion++;
+            restorePending = false;
             cleanup(); restoreFrame(); dashEl.remove(); if (backEl) backEl.remove(); dashEl = null; backEl = null;
             // 回桌面必须清干净移动端状态：否则 rm-x-in-session 残留，
             // 下次切回移动端会直接落到「会话视图」而非仪表盘（会话为空则整页空白）。
@@ -784,25 +810,12 @@ function factoryBody(require2) {
       buildSkeleton();
 
       // Subscribe FIRST so we catch data arriving — use scheduleRender for batching
-      unsubSessions = trackSub(sessions.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
+      unsubSessions = trackSub(sessions.list.subscribe(function() { restoreSessionView(); if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
       unsubWorkspaces = trackSub(workspaces.list.subscribe(function() { if (isMobile() && !document.body.classList.contains('rm-x-in-session')) scheduleRender(); }));
 
       tryRender();
 
-      // Restore view state
-      var saved = sessionStorage.getItem(SESSION_KEY);
-      if (saved === 'session') {
-        var snap = sessions.list.getSnapshot();
-        if (snap.current) {
-          enterSession();
-        } else {
-          var off = sessions.list.subscribe(function() {
-            var s = sessions.list.getSnapshot();
-            if (s.current) { off(); enterSession(); }
-            else if (s.phase === 'ready' && !s.current) { off(); sessionStorage.setItem(SESSION_KEY, 'dashboard'); }
-          });
-        }
-      }
+      restoreSessionView();
     }
     boot();
   }
@@ -810,9 +823,9 @@ function factoryBody(require2) {
   return {
     apply: function(ctx) {
       ctx.slots.inject('settings.section', function() { return ctx.slots.register({ name: 'settings.section', id: 'dsh-remote-x', order: 120, label: function() { return '远程控制'; } }, RemoteControlSection); });
-      try { mobileLayer(ctx, ctx.sessions, ctx.workspaces); } catch(e) {}
+      try { mobileLayer(ctx, ctx.sessions, ctx.workspaces, ctx.uiWorkspace); } catch(e) {}
     },
-    inject: ['slots', 'modules', 'sessions', 'workspaces'],
+    inject: ['slots', 'modules', 'sessions', 'workspaces', 'uiWorkspace'],
   };
 }
 
