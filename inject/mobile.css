@@ -188,14 +188,22 @@
     margin-left: 0 !important;
     margin-top: 0 !important;
   }
-  /* 呼出的「右侧栏」抽屉：展开与收起都必须顶在返回条下方。
-     （2026-09-11 重写）原写法是 [class*="_panel"] 通配 + 排除 teams-x，
-     会误伤一切类名含 _panel 的浮层——设置模态的面板（xxx_panel）被强设
-     top 后整块塌成 0x0（浏览器实测复现），此为设置页在手机上打不开的根因。
-     rc.2 的抽屉面板自带 data-sidebar-right-panel 属性，改用属性精确命中，
-     不再需要任何排除列表。 */
-  body.rm-x-mobile.rm-x-in-session [data-sidebar-right-panel] {
-    top: calc(env(safe-area-inset-top, 0px) + 49px) !important;
+  /* 呼出的「右侧栏」抽屉：面板是 rightbarCol 内的绝对定位框，以列轨为包含块。
+     本文件把 frame 强设为纵向 flex 后，中心列 flex:1 占满，列轨被挤到 frame
+     底部且高度归零，面板 top/bottom 解析出 0 高、整块落在视口外（2026-09-23
+     iPhone 视口实测：点开后 panel box={y:713,h:0}，open 已置位但不可见）。
+     把列轨钉成贴 frame 右缘的零宽全高轨：面板拿到全高包含块与不动的右缘；
+     零宽不占命中区，不会拦会话区的点击（面板自身 pointer-events:none，
+     交互元素在 dockkit 内显式恢复 auto）。面板 top 用模块默认 0——返回条在
+     frame 之外，面板天然在其下方；旧 49px 顶距（04e336d，面板锚视口顶的年代）
+     在现结构下会反留一条缝，故移除。 */
+  body.rm-x-mobile.rm-x-in-session [data-rightbar-col] {
+    position: absolute !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    right: 0 !important;
+    left: auto !important;
+    width: 0 !important;
   }
 
   /* （2026-09-11 移除）原「抽屉打开时全屏让位」规则：按用户要求，抽屉
