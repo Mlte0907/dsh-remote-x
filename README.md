@@ -42,6 +42,8 @@
 | 公网访问 | cloudflared 隧道一键开关，公网 URL 即时显示，**并渲染公网二维码**——人在外面扫码即用，无需同一局域网 |
 | 复制链接 | 局域网 / 公网地址一键复制 |
 | 主题 | 全部配色走 DSH 设计令牌（`--dsw-alias-*`），深浅主题自动跟随 |
+| frps 服务器 | 自建 frp 服务器一键绑定（服务器地址 / 端口 / token；本机 `frpc.toml` 一键预填，token 仅存服务器端），frpc 由插件托管、重启自恢复 |
+| 浏览器登录口令 | 随机 6 位口令 + 代理登录页：裸地址打开时输口令进入，失败指数退避，会话复用现有门禁 |
 
 ### 移动端覆盖层
 
@@ -60,13 +62,30 @@
 - 公网访问需要本机安装 [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)。
 - iOS Safari **屏幕边缘**的系统返回手势属浏览器行为，页面无法禁用；页面中部滑动无影响。
 
+## 自建 frps 服务器接入（前置条件）
+
+插件只做客户端一侧：把本机 3081 反代口经 frpc 隧道挂到你自己的 frps 服务器。服务器侧是使用前提，需要自行准备：
+
+1. **一台有公网 IP 的服务器**：开放 frps 控制端口（默认 7000/tcp）与分配给本插件的远程端口（如 17494/tcp）。
+2. **部署 frps**：用与本机 frpc 同版本的 frps 二进制，配置 `bindPort`（默认 7000）与 `auth.token`，以守护方式运行（systemd / docker 均可）。
+3. **三个绑定参数**（设置页「frps 服务器」卡片填写）：服务器地址（`serverAddr`）、服务器端口（即 frps 的 `bindPort`）、token（`auth.token`）；卡片里的「远程端口」是 frps 分配给这条隧道的端口号。
+
+本机已有 `~/.config/frp/frpc.toml` 时，点「从本机 frpc 配置预填」自动填前两项；token 由服务端直接读本机配置、**不回传页面**。手动填 token 时同样只存进本机 0600 状态文件。
+
+**HTTPS / 域名在服务器侧终结**：frp 的 tcp 隧道不处理 TLS。要在 `https://你的域名` 上访问，请在 frps 服务器用 nginx/caddy 配证书并把 443（或自定义端口）反代到这条隧道的远程端口。**未配 TLS 时整条链路是明文 HTTP**（frps 控制端口与远程端口的流量皆然，含登录口令），只建议在可信网络使用。
+
+插件不改写、不停启你自己的 frpc 配置与 `frpc.service`；绑定后生成的是独立的 `~/.dsh/frpc-remote-x.toml`（0600）与插件自有 frpc 进程，重启宿主自动恢复。
+
 ## 架构
 
 ```
 dsh-remote-x/
 ├── src/index.ts        # 宿主插件：mobile CSS 注入(webserver/index-inject) +
-│                       #   qr-info / qrcode / lan-toggle / public-toggle API +
-│                       #   局域网反向代理(3081) + cloudflared 隧道管理
+│                       #   qr-info / qrcode / lan-toggle / public-toggle /
+│                       #   frps-* / password-regenerate API + 6 位口令生成
+├── lib/proxy.mjs       # 3081 反代：Host 改写、key/token/会话门禁、6 位登录页
+├── lib/frpc.mjs        # frpc 配置生成与进程托管（孤儿清扫、重启自动恢复）
+├── lib/tunnel.mjs      # cloudflared 隧道管理
 ├── inject/mobile.css   # 移动端纯 CSS 覆盖层（body class 模型，宽屏零影响）
 ├── dist/client.js      # 客户端模块：设置页 section + 移动层
 │                       #   （sessions/workspaces 订阅驱动，手写无构建依赖）
@@ -98,15 +117,22 @@ dsh plugin --profile web add ./dsh-remote-x
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/dsh-remote-x/api/qr-info` | 入口地址、局域网 IP 列表、LAN/公网开关状态、token 检测 |
+| GET | `/dsh-remote-x/api/qr-info` | 入口地址、局域网 IP 列表、LAN/公网开关、token 检测、`cloudflaredAvailable` / `frpcAvailable`、`frps` 绑定状态、`loginPassword`（6 位口令） |
 | GET | `/dsh-remote-x/api/qrcode?text=` | 自渲染 QR SVG（纯矩阵核心，无图片依赖） |
 | POST | `/dsh-remote-x/api/lan-toggle` | 局域网代理开关 |
 | POST | `/dsh-remote-x/api/public-toggle` | cloudflared 公网隧道开关（返回公网 URL） |
+| GET | `/dsh-remote-x/api/frps-prefill` | 读本机 `~/.config/frp/frpc.toml` 预填绑定（只回地址/端口，**不回 token**） |
+| POST | `/dsh-remote-x/api/frps-bind` | 绑定 frps（`addr` / `port` / `remotePort` + `token` 或 `useLocalToken`）并拉起 frpc |
+| POST | `/dsh-remote-x/api/frps-toggle` | frps 接入开关（启停插件托管的 frpc） |
+| POST | `/dsh-remote-x/api/frps-unbind` | 解绑：停 frpc、删除生成的配置与状态 |
+| POST | `/dsh-remote-x/api/password-regenerate` | 重新生成 6 位浏览器登录口令 |
 
 ## 安全说明
 
 - Harness 后端保持默认 `127.0.0.1` 绑定不变；对手机暴露的只有 3081 代理与隧道出口。
 - 代理放行只认做过值校验的凭据：`?key=` / `/k/<key>/` 与 `accessKey` 恒时比较，`?token=` / `/t/<token>/` 对照最新登录口令，`remote-x-key` cookie 按值比对；认证通过的设备另获代理自签的 `remote-x-session` cookie（HttpOnly；签名密钥 `~/.dsh/remote-x-session.key`，权限 0600）。仅凭 cookie 名称（含 `dsh-auth-*`）一律 401。
+- **6 位浏览器登录口令**：宿主首启随机生成，存于 `~/.dsh/remote-x-state.json`（0600）；代理在浏览器整页导航被拒时回登录页，POST 校验走恒时比较，连续失败按 1s→60s 指数退避（frp 流量都来自 127.0.0.1，无法按 IP 限速）。口令面关闭（状态文件无 `login` 字段）时退回纯文本 401。口令与 frps token 未经 TLS 即为明文，公网接入务必先在服务器侧配好证书。
+- frps 绑定与 token 只写本机状态文件与生成的 `~/.dsh/frpc-remote-x.toml`（均 0600），任何 API 响应与页面 JS 都不含 token；插件不读写、不停启你自己的 frpc 配置与 `frpc.service`。
 - 所有插件 API 要求 `x-remote-nonce`（页面注入的一次性值）；代理入口可选 `accessKey`。
 - 公网隧道链接含访问凭据，请勿公开分享；泄露时在设置页关闭公网开关重建。
 

@@ -15,7 +15,7 @@
 
 import { open, readFile } from 'node:fs/promises'
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomInt } from 'node:crypto'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -27,6 +27,7 @@ import type { IncomingMessage, ServerResponse, Server } from 'node:http'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { startTunnel, sweepOrphanTunnel } from '../lib/tunnel.mjs'
+import { frpcAvailable, frpcStatus, parseLocalFrpcConfig, removeFrpcConfig, startFrpc, stopFrpc, sweepOrphanFrpc } from '../lib/frpc.mjs'
 
 /** Stable Cordis plugin name. */
 export const name = 'dsh-remote-x'
@@ -473,6 +474,17 @@ async function cloudflaredAvailableCached(): Promise<boolean> {
   return value
 }
 
+let frpcCache: ProbeCache<boolean> | null = null
+
+/** frpc 是否可用（60s 缓存；frpcAvailable 优先查本机安装路径，PATH 兜底）。 */
+async function frpcAvailableCached(): Promise<boolean> {
+  const fresh = cacheFresh(frpcCache, 60_000)
+  if (fresh !== null) return fresh
+  const value = await frpcAvailable()
+  frpcCache = { value, at: Date.now() }
+  return value
+}
+
 let firewallCache: ProbeCache<string | null> | null = null
 
 /** 防火墙探测（60s 缓存）。systemctl is-active 仅对 active 返回 0。 */
@@ -550,29 +562,64 @@ let lanProxy: { server: Server; port: number } | null = null
 /** 代理由本进程之外的机制托管（如用户级 systemd 单元）：沿用而不接管。 */
 let lanProxyExternal = false
 
-/* ---------------- 局域网开关持久化（跨重启自动恢复） ---------------- */
+/* ---------------- 状态文件持久化（开关 / 登录口令 / frps 绑定） ---------------- */
 
 /**
- * 开关状态只存在进程内存里，dsh 崩溃/重启后"远程控制"总是回到关闭，
- * 每次都要手动重开（2026-09-13 用户反馈）。落盘一行 JSON，apply 时读回。
- * 公网隧道不恢复：快速隧道 URL 每次启动都变，静默重开一个用户不知道的
+ * 插件运行状态（~/.dsh/remote-x-state.json，0600）。局域网开关、浏览器登录
+ * 口令、frps 绑定共用这一份；登录页（lib/proxy.mjs）直接读 login 字段。
+ *
+ * 公网隧道不持久化：快速隧道 URL 每次启动都变，静默重开一个用户不知道的
  * 公网入口是安全反模式。
  */
+interface RemoteXState {
+  /** 局域网反代开关（跨重启自动恢复）。 */
+  lan?: boolean
+  /** 最近一次开关写入时刻（ms）。 */
+  at?: number
+  /** 6 位浏览器登录口令（首启随机生成；登录页凭它换会话 cookie）。 */
+  login?: string
+  /** frps 绑定（存在即已绑定）。 */
+  frps?: FrpsBinding
+}
+
+/** frps 绑定参数；token 只存本文件（0600），任何 API 都不回传。 */
+interface FrpsBinding {
+  addr: string
+  port: number
+  token: string
+  remotePort: number
+  /** 绑定且启用：apply 时自动重开 frpc。 */
+  enabled: boolean
+}
+
 const lanStateFile = () => path.join(homedir(), '.dsh', 'remote-x-state.json')
 
-function persistLanState(enabled: boolean): void {
+function readState(): RemoteXState {
+  try {
+    const raw = JSON.parse(readFileSync(lanStateFile(), 'utf8')) as RemoteXState
+    return typeof raw === 'object' && raw !== null ? raw : {}
+  } catch { return {} }
+}
+
+/**
+ * 读改写整份状态文件（合并语义：patch 未给出的字段原样保留；值为 undefined
+ * 的字段被删除），始终 0600。
+ * @param patch 要写入/删除的字段
+ */
+function writeState(patch: Partial<RemoteXState>): void {
   try {
     const file = lanStateFile()
-    writeFileSync(file, JSON.stringify({ lan: enabled, at: Date.now() }), { mode: 0o600 })
+    writeFileSync(file, JSON.stringify({ ...readState(), ...patch }), { mode: 0o600 })
     chmodSync(file, 0o600) // 已存在文件不受 mode 影响，补一次收敛权限
-  } catch { /* 尽力而为；读不回大不了退回手动开 */ }
+  } catch { /* 尽力而为；写失败大不了退回手动开 */ }
+}
+
+function persistLanState(enabled: boolean): void {
+  writeState({ lan: enabled, at: Date.now() })
 }
 
 function readLanState(): boolean {
-  try {
-    const raw = JSON.parse(readFileSync(lanStateFile(), 'utf8')) as { lan?: boolean }
-    return raw.lan === true
-  } catch { return false }
+  return readState().lan === true
 }
 
 export async function apply(ctx: Context, config?: Config): Promise<void> {
@@ -712,6 +759,65 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
     }
   }
 
+  /* ---------------- frps 接入（frpc 由插件托管） + 浏览器登录口令 ---------------- */
+
+  // 浏览器登录口令：首启随机生成 6 位并落盘（0600），设置页可重新生成；
+  // lib/proxy.mjs 登录页每次尝试重读状态文件，换号即时生效。
+  if (!/^\d{6}$/.test(readState().login ?? '')) {
+    writeState({ login: String(randomInt(0, 1_000_000)).padStart(6, '0') })
+  }
+
+  // frps 自动恢复：先扫上一进程遗留的孤儿 frpc（kill -9 不会带走它，不清扫
+  // 就是"假关"），绑定且启用过则重开。异步执行，不拖慢插件加载。
+  void (async () => {
+    try {
+      if (await sweepOrphanFrpc()) ctx.logger.warn('dsh-remote-x: swept orphan frpc left by a previous process')
+    } catch { /* 尽力 */ }
+    if (readState().frps?.enabled !== true) return
+    try {
+      await startFrps()
+      ctx.logger.info('dsh-remote-x: frps binding auto-resumed from persisted state')
+    } catch (error) {
+      ctx.logger.warn(`dsh-remote-x: frps auto-resume failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })()
+
+  /**
+   * 启动 frpc（绑定参数读状态文件）。失败抛错：自动恢复与卡片开关各自兜底。
+   */
+  async function startFrps(): Promise<void> {
+    const binding = readState().frps
+    if (binding === undefined || binding.enabled !== true) return
+    const result = await startFrpc(binding, proxyPort, {
+      onError: ({ kind, error }: { kind: string; error: Error }) => {
+        ctx.logger.warn(`dsh-remote-x: frpc ${kind}: ${error.message}`)
+      },
+    })
+    ctx.logger.info(`dsh-remote-x: frpc running (pid ${result.pid}) → ${binding.addr}:${binding.port}, remote :${binding.remotePort} → 127.0.0.1:${proxyPort}`)
+  }
+
+  function stopFrps(): void {
+    try { stopFrpc() } catch { /* 尽力 */ }
+  }
+
+  /** frps 卡片状态数据（token 永不进入响应）。 */
+  function frpsInfo() {
+    const binding = readState().frps
+    const status = frpcStatus()
+    return {
+      bound: binding !== undefined,
+      addr: binding?.addr ?? null,
+      port: binding?.port ?? null,
+      remotePort: binding?.remotePort ?? null,
+      tokenConfigured: (binding?.token.length ?? 0) > 0,
+      enabled: binding?.enabled === true,
+      running: status.running,
+      pid: status.pid,
+      since: status.since,
+      lastError: status.lastError,
+    }
+  }
+
   const route: WebRoute = {
     kind: 'prefix',
     path: '/dsh-remote-x/api',
@@ -751,6 +857,9 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
           tunnelLatencyMs: typeof publicTunnel?.runtime?.latencyMs === 'function' ? (publicTunnel.runtime.latencyMs() ?? null) : null,
           tunnelStatus: publicTunnel?.runtime?.status ?? 'disabled',
           cloudflaredAvailable: await cloudflaredAvailableCached(),
+          frpcAvailable: await frpcAvailableCached(),
+          frps: frpsInfo(),
+          loginPassword: readState().login ?? null,
           firewall: await firewallBlockerCached(),
           version: pluginVersion,
         })
@@ -856,6 +965,121 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
         return
       }
 
+      /* ---------------- frps 绑定 / 浏览器登录口令（均在 nonce 门禁内） ---------------- */
+
+      if (sub === '/frps-prefill' && req.method === 'GET') {
+        if (!nonceValid(req.headers['x-remote-nonce'])) {
+          sendError(res, 401, 'missing or invalid nonce')
+          return
+        }
+        const local = parseLocalFrpcConfig()
+        if (local === null) {
+          sendError(res, 404, '未找到本机 frpc 配置（~/.config/frp/frpc.toml），请手动填写')
+          return
+        }
+        // token 不回传：绑定请求带 useLocalToken，由服务端自己读本机配置
+        sendJson(res, 200, { ok: true, addr: local.addr, port: local.port, tokenAvailable: local.token.length > 0 })
+        return
+      }
+
+      if (sub === '/frps-bind' && req.method === 'POST') {
+        if (!nonceValid(req.headers['x-remote-nonce'])) {
+          sendError(res, 401, 'missing or invalid nonce')
+          return
+        }
+        let raw = ''
+        try { for await (const ch of req) raw += ch } catch {}
+        let body: Record<string, unknown> = {}
+        try { body = JSON.parse(raw) } catch {}
+        const addr = typeof body.addr === 'string' ? body.addr.trim() : ''
+        const port = Number(body.port)
+        const remotePort = Number(body.remotePort)
+        const addrOk = /^[A-Za-z0-9._-]{1,253}$/.test(addr)
+          || (addr.includes(':') && /^[0-9a-fA-F:.]{2,45}$/.test(addr))
+        if (!addrOk) {
+          sendError(res, 400, '服务器地址无效（填主机名或 IP，不含协议与路径）')
+          return
+        }
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          sendError(res, 400, '服务器端口需在 1..65535 之间')
+          return
+        }
+        if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) {
+          sendError(res, 400, '远程端口需在 1..65535 之间')
+          return
+        }
+        let token: string | undefined
+        if (body.useLocalToken === true) token = parseLocalFrpcConfig()?.token
+        else if (typeof body.token === 'string') token = body.token
+        if (token === undefined || token.length < 8 || token.length > 512 || /[\u0000-\u001f]/.test(token)) {
+          sendError(res, 400, 'token 无效：手动填写 8 位以上，或用「从本机 frpc 配置预填」由服务端读取')
+          return
+        }
+        writeState({ frps: { addr, port, token, remotePort, enabled: true } })
+        let startError: string | null = null
+        try {
+          await startFrps()
+        } catch (err) {
+          startError = err instanceof Error ? err.message : String(err)
+        }
+        sendJson(res, 200, { ok: true, startError, frps: frpsInfo() })
+        return
+      }
+
+      if (sub === '/frps-toggle' && req.method === 'POST') {
+        if (!nonceValid(req.headers['x-remote-nonce'])) {
+          sendError(res, 401, 'missing or invalid nonce')
+          return
+        }
+        let raw = ''
+        try { for await (const ch of req) raw += ch } catch {}
+        let body: Record<string, unknown> = {}
+        try { body = JSON.parse(raw) } catch {}
+        const enabled = body.enabled === true
+        const binding = readState().frps
+        if (binding === undefined) {
+          sendError(res, 409, '尚未绑定 frps 服务器')
+          return
+        }
+        // 先落盘再操作：startFrps 从状态文件读 enabled
+        writeState({ frps: { ...binding, enabled } })
+        let startError: string | null = null
+        if (enabled) {
+          try {
+            await startFrps()
+          } catch (err) {
+            startError = err instanceof Error ? err.message : String(err)
+          }
+        } else {
+          stopFrps()
+        }
+        sendJson(res, 200, { ok: true, startError, frps: frpsInfo() })
+        return
+      }
+
+      if (sub === '/frps-unbind' && req.method === 'POST') {
+        if (!nonceValid(req.headers['x-remote-nonce'])) {
+          sendError(res, 401, 'missing or invalid nonce')
+          return
+        }
+        stopFrps()
+        removeFrpcConfig()
+        writeState({ frps: undefined })
+        sendJson(res, 200, { ok: true, frps: frpsInfo() })
+        return
+      }
+
+      if (sub === '/password-regenerate' && req.method === 'POST') {
+        if (!nonceValid(req.headers['x-remote-nonce'])) {
+          sendError(res, 401, 'missing or invalid nonce')
+          return
+        }
+        const loginPassword = String(randomInt(0, 1_000_000)).padStart(6, '0')
+        writeState({ login: loginPassword })
+        sendJson(res, 200, { ok: true, loginPassword })
+        return
+      }
+
       sendError(res, 404, `no handler for ${req.method} ${url.pathname}`)
     },
   }
@@ -865,6 +1089,8 @@ setTimeout(function(){if(document.body.classList.contains('rm-x-mobile')&&!docum
     return () => {
       try { publicTunnel?.stop?.() } catch { /* ignore */ }
       publicTunnel = null
+      // frpc 同为本进程托管：卸载即停（状态文件 enabled 保留，重新加载会自动恢复）
+      stopFrps()
       // 反代由本进程托管，卸载时必须一起释放端口，否则重载后 3081 仍被占用
       void stopLanProxy().catch(() => { /* ignore */ })
       dispose()

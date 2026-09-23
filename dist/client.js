@@ -187,6 +187,11 @@ function factoryBody(require2) {
     var pubUrlState = useState(null); var publicUrl = pubUrlState[0]; var setPublicUrl = pubUrlState[1];
     var pubBusyState = useState(false); var publicBusy = pubBusyState[0]; var setPublicBusy = pubBusyState[1];
     var cfState = useState(true); var cfAvailable = cfState[0]; var setCfAvailable = cfState[1];
+    var frpsState = useState(null); var frps = frpsState[0]; var setFrps = frpsState[1];
+    var frpsBusyState = useState(false); var frpsBusy = frpsBusyState[0]; var setFrpsBusy = frpsBusyState[1];
+    var frpsFormState = useState({ addr: '', port: '7000', token: '', remotePort: '17494', useLocalToken: false });
+    var frpsForm = frpsFormState[0]; var setFrpsForm = frpsFormState[1];
+    var loginPwState = useState(null); var loginPw = loginPwState[0]; var setLoginPw = loginPwState[1];
 
     var entry = info && info.entry ? info.entry : null;
     var shareUrl = entry && info && info.lanIps && info.lanIps[ipIndex]
@@ -196,7 +201,7 @@ function factoryBody(require2) {
       var alive = true;
       api('/dsh-remote-x/api/qr-info')
         .then(function(res) { return res.ok ? res.json() : Promise.reject(new Error('加载失败 (' + res.status + ')')); })
-        .then(function(data) { if (!alive) return; setInfo(data); setLanOn(!!data.lanEnabled); setPublicOn(!!data.publicEnabled); setPublicUrl(data.publicUrl || null); setCfAvailable(data.cloudflaredAvailable !== false); })
+        .then(function(data) { if (!alive) return; setInfo(data); setLanOn(!!data.lanEnabled); setPublicOn(!!data.publicEnabled); setPublicUrl(data.publicUrl || null); setCfAvailable(data.cloudflaredAvailable !== false); setFrps(data.frps || null); setLoginPw(data.loginPassword || null); })
         .catch(function(err) { if (alive) setError(String(err.message || err)); });
       return function() { alive = false; };
     }, []);
@@ -214,6 +219,37 @@ function factoryBody(require2) {
         .then(function(r) { return r.ok ? r.json() : readErr(r).then(function(m) { throw new Error(m); }); })
         .then(function(d) { if (d.enabled) setPublicUrl(d.url || null); else setPublicUrl(null); })
         .catch(function(err) { setPublicOn(!next); setError(String(err.message || err)); }).finally(function() { setPublicBusy(false); }); };
+
+    /* ---- frps / 登录口令 操作（均走 nonce 门禁 API） ---- */
+    var postJson = function(path, body) {
+      return api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) })
+        .then(function(r) { return r.ok ? r.json() : readErr(r).then(function(m) { throw new Error(m); }); });
+    };
+    var toggleFrps = function() { if (frpsBusy || !frps || !frps.bound) return; var next = !frps.enabled; setFrpsBusy(true); setFrps(Object.assign({}, frps, { enabled: next })); setError(null);
+      postJson('/dsh-remote-x/api/frps-toggle', { enabled: next })
+        .then(function(d) { setFrps(d.frps); if (d.startError) setError('frpc 启动失败：' + d.startError); })
+        .catch(function(err) { setFrps(Object.assign({}, frps, { enabled: !next })); setError(String(err.message || err)); })
+        .finally(function() { setFrpsBusy(false); }); };
+    var prefillFrps = function() { if (frpsBusy) return; setFrpsBusy(true); setError(null);
+      api('/dsh-remote-x/api/frps-prefill').then(function(r) { return r.ok ? r.json() : readErr(r).then(function(m) { throw new Error(m); }); })
+        .then(function(d) { setFrpsForm(Object.assign({}, frpsForm, { addr: d.addr, port: String(d.port), useLocalToken: d.tokenAvailable === true })); })
+        .catch(function(err) { setError(String(err.message || err)); })
+        .finally(function() { setFrpsBusy(false); }); };
+    var bindFrps = function() { if (frpsBusy) return; setFrpsBusy(true); setError(null);
+      postJson('/dsh-remote-x/api/frps-bind', { addr: frpsForm.addr, port: Number(frpsForm.port), remotePort: Number(frpsForm.remotePort), token: frpsForm.useLocalToken ? undefined : frpsForm.token, useLocalToken: frpsForm.useLocalToken === true })
+        .then(function(d) { setFrps(d.frps); if (d.startError) setError('绑定已保存，但 frpc 启动失败：' + d.startError); })
+        .catch(function(err) { setError(String(err.message || err)); })
+        .finally(function() { setFrpsBusy(false); }); };
+    var unbindFrps = function() { if (frpsBusy) return; if (!confirm('解除 frps 绑定？绑定参数与生成的 frpc 配置会被删除。')) return; setFrpsBusy(true); setError(null);
+      postJson('/dsh-remote-x/api/frps-unbind', {})
+        .then(function(d) { setFrps(d.frps); })
+        .catch(function(err) { setError(String(err.message || err)); })
+        .finally(function() { setFrpsBusy(false); }); };
+    var regenLogin = function() { if (frpsBusy) return; setFrpsBusy(true); setError(null);
+      postJson('/dsh-remote-x/api/password-regenerate', {})
+        .then(function(d) { setLoginPw(d.loginPassword); })
+        .catch(function(err) { setError(String(err.message || err)); })
+        .finally(function() { setFrpsBusy(false); }); };
 
     var ready = info !== null && lanOn && info.tokenDetected && info.proxyPort > 0;
     var qrSrc = shareUrl ? '/dsh-remote-x/api/qrcode?text=' + encodeURIComponent(shareUrl) : '';
@@ -233,12 +269,69 @@ function factoryBody(require2) {
 
     var tips = [{ icon: '📶', text: '手机与电脑需在同一局域网内' }, { icon: '📱', text: '扫码即用手机打开网页端' }, { icon: '🔒', text: '地址含登录口令，可安全分享' }];
 
+    /* ---- frps 卡片与登录口令卡片 ---- */
+    var frpcOk = !info || info.frpcAvailable !== false;
+    var frpsInput = function(label, key, placeholder, extra) {
+      return h('label', { style: { display: 'block', fontSize: 12.5, color: C.sub } }, label,
+        h('input', Object.assign({
+          value: frpsForm[key], placeholder: placeholder,
+          onChange: function(e) { var v = e.target.value; setFrpsForm(function(prev) { return Object.assign({}, prev, { [key]: v }); }); },
+          style: { width: '100%', boxSizing: 'border-box', marginTop: 4, padding: '8px 10px', fontSize: 13.5, borderRadius: 8, border: '1px solid ' + C.borderStrong, background: 'transparent', color: C.text },
+        }, extra || {})));
+    };
+    var frpsBtn = function(label, onClick, primary) {
+      return h('button', { onClick: onClick, disabled: frpsBusy,
+        style: { fontSize: 13, padding: '8px 16px', borderRadius: 8, cursor: frpsBusy ? 'wait' : 'pointer',
+          border: '1px solid ' + (primary ? 'transparent' : C.borderStrong),
+          background: primary ? C.accent : 'transparent', color: primary ? '#fff' : C.text } }, label);
+    };
+    var frpsCard = h('div', { style: { marginTop: 24, padding: 20, borderRadius: 16, background: C.cardStrong, border: '1px solid ' + C.border } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 } },
+        h('div', { style: { flex: 1 } },
+          h('div', { style: { fontSize: 16, fontWeight: 600 } }, 'frps 服务器'),
+          h('div', { style: { fontSize: 12.5, color: C.sub, marginTop: 2 } }, '自建 frp 服务器接入（frpc 由插件托管）')),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+          frps && frps.bound ? badge(!!frps.running) : null,
+          frps && frps.bound ? h(Toggle, { on: !!frps.enabled, onChange: toggleFrps, busy: frpsBusy, title: 'frps 接入' }) : null)),
+      frpcOk ? null : h('div', { style: { padding: 16, borderRadius: C.radius, background: C.warnDim, border: '1px solid rgba(154,103,0,0.30)', color: C.warn, fontSize: 13, lineHeight: 1.7 } }, '未检测到 frpc：frps 接入需要它（安装 frpc 后重开设置页）。'),
+      frps && !frps.bound ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+        h('div', { style: { fontSize: 12.5, color: C.sub, lineHeight: 1.7 } }, '填 frps 服务器三个参数：服务器地址、端口、token（服务器已部署 frps，见 README）。本机已有 frpc 配置可一键预填。'),
+        frpsInput('服务器地址', 'addr', '如 113.45.134.86'),
+        h('div', { style: { display: 'flex', gap: 12 } },
+          h('div', { style: { flex: 1 } }, frpsInput('服务器端口', 'port', '7000')),
+          h('div', { style: { flex: 1 } }, frpsInput('远程端口', 'remotePort', '17494'))),
+        frpsInput('Token', 'token', frpsForm.useLocalToken ? '已从本机 frpc.toml 读取（仅存服务器端）' : 'frps 的 auth.token', frpsForm.useLocalToken ? { disabled: true } : null),
+        h('div', { style: { display: 'flex', gap: 10, marginTop: 4 } },
+          frpsBtn('从本机 frpc 配置预填', prefillFrps, false),
+          frpsBtn('绑定并启用', bindFrps, true))) : null,
+      frps && frps.bound ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 12, background: C.card, border: '1px solid ' + C.border } },
+          h('span', { style: { opacity: 0.7 } }, '🔗'),
+          h('code', { style: { flex: 1, fontSize: 12.5, fontFamily: 'ui-monospace, Menlo, monospace', wordBreak: 'break-all', color: C.text } },
+            frps.addr + ':' + frps.port + ' → 127.0.0.1:' + (info ? info.proxyPort : '') + '（远程端口 ' + frps.remotePort + '）')),
+        h('div', { style: { fontSize: 12.5, color: C.sub } }, 'Token：' + (frps.tokenConfigured ? '已配置（仅存服务器端，页面不持有）' : '缺失，请解绑后重新绑定')),
+        frps.running
+          ? h('div', { style: { fontSize: 12.5, color: frps.lastError ? C.warn : C.accentText } }, 'frpc 运行中' + (frps.lastError ? '（' + frps.lastError + '）' : ''))
+          : h('div', { style: { fontSize: 12.5, color: frps.lastError ? C.dangerText : C.sub } }, 'frpc 未运行' + (frps.lastError ? '：' + frps.lastError : '')),
+        h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 10 } },
+          frpsBtn('解绑', unbindFrps, false))) : null);
+    var loginCard = h('div', { style: { marginTop: 16, padding: 20, borderRadius: 16, background: C.cardStrong, border: '1px solid ' + C.border } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 14 } },
+        h('div', { style: { flex: 1 } },
+          h('div', { style: { fontSize: 16, fontWeight: 600 } }, '浏览器登录口令'),
+          h('div', { style: { fontSize: 12.5, color: C.sub, marginTop: 2 } }, '用局域网/公网地址裸打开时，登录页输入它进入')),
+        loginPw ? h('div', { style: { fontSize: 26, fontWeight: 700, letterSpacing: 6, fontFamily: 'ui-monospace, Menlo, monospace', color: C.text } }, loginPw) : null,
+        frpsBtn('重新生成', regenLogin, false)),
+      h('div', { style: { marginTop: 10, fontSize: 12, color: C.sub, lineHeight: 1.7 } }, '口令存于本机 0600 状态文件，登录失败自动指数退避；公网侧若未配 TLS，口令经明文传输可被窃听（见 README 安全说明）。'));
+
     return h('section', { style: { maxWidth: 640, margin: '0 auto', color: C.text } },
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 } },
         h('div', { style: { flex: 1 } }, h('div', { style: { fontSize: 18, fontWeight: 600 } }, '远程控制'), h('div', { style: { fontSize: 12.5, color: C.sub, marginTop: 2 } }, '用手机扫码接管网页端')),
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } }, badge(lanOn), h(Toggle, { on: lanOn, onChange: toggleLan, busy: busy }))),
       notice,
       firewallHint,
+      frpsCard,
+      loginCard,
       ready && h('div', { style: { padding: 28, borderRadius: 16, background: C.cardStrong, border: '1px solid ' + C.border, textAlign: 'center', marginTop: 4 } },
         h('div', { style: { display: 'inline-block', padding: 14, borderRadius: 14, background: '#fff', border: '1px solid ' + C.border } },
           h('img', { src: qrSrc, width: 196, height: 196, alt: 'QR', style: { display: 'block', borderRadius: 4 } })),
