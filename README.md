@@ -106,6 +106,7 @@ dsh plugin --profile web add ./dsh-remote-x
 ## 安全说明
 
 - Harness 后端保持默认 `127.0.0.1` 绑定不变；对手机暴露的只有 3081 代理与隧道出口。
+- 代理放行只认做过值校验的凭据：`?key=` / `/k/<key>/` 与 `accessKey` 恒时比较，`?token=` / `/t/<token>/` 对照最新登录口令，`remote-x-key` cookie 按值比对；认证通过的设备另获代理自签的 `remote-x-session` cookie（HttpOnly；签名密钥 `~/.dsh/remote-x-session.key`，权限 0600）。仅凭 cookie 名称（含 `dsh-auth-*`）一律 401。
 - 所有插件 API 要求 `x-remote-nonce`（页面注入的一次性值）；代理入口可选 `accessKey`。
 - 公网隧道链接含访问凭据，请勿公开分享；泄露时在设置页关闭公网开关重建。
 

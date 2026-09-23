@@ -14,7 +14,7 @@
  */
 
 import { open, readFile } from 'node:fs/promises'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -562,7 +562,9 @@ const lanStateFile = () => path.join(homedir(), '.dsh', 'remote-x-state.json')
 
 function persistLanState(enabled: boolean): void {
   try {
-    writeFileSync(lanStateFile(), JSON.stringify({ lan: enabled, at: Date.now() }))
+    const file = lanStateFile()
+    writeFileSync(file, JSON.stringify({ lan: enabled, at: Date.now() }), { mode: 0o600 })
+    chmodSync(file, 0o600) // 已存在文件不受 mode 影响，补一次收敛权限
   } catch { /* 尽力而为；读不回大不了退回手动开 */ }
 }
 
