@@ -20,7 +20,7 @@ function factoryBody(require2) {
     border: 'var(--dsw-alias-border-l2, #d0d7de)', borderStrong: 'var(--dsw-alias-border-l1, #afb8c1)',
     accent: 'var(--dsw-alias-state-business-primary, #1a7f37)', accentText: 'var(--dsw-alias-state-business-primary, #1a7f37)', accentDim: 'rgba(103,158,254,.14)',
     danger: 'var(--dsw-alias-state-error-primary, #cf222e)', dangerText: 'var(--dsw-alias-state-error-primary, #cf222e)', dangerDim: 'rgba(242,90,90,.12)',
-    warn: 'var(--dsw-alias-state-warning-primary, #9a6700)', warnDim: 'rgba(245,166,35,.12)', radius: 14,
+    warn: 'var(--dsw-alias-state-warn-primary, #9a6700)', warnDim: 'rgba(245,166,35,.12)', radius: 14,
   };
 
   function Toggle(props) {
